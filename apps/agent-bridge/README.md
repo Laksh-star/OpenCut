@@ -79,3 +79,8 @@ OPENCUT_AGENT_ROOT = "/absolute/path/to/video-workspace"
 7. Ask for human approval before a longer render or any publishing workflow.
 
 The MVP timeline is intentionally narrow: sequential video clips, optional per-clip audio control, reframing by fit-and-pad, and optional SRT/VTT captions muxed into MP4. Text, overlays, transitions, keyframes, music mixing, and native OpenCut project synchronization belong in the next adapter version.
+
+The web app's agent review workspace already consumes this same schema for
+visual inspection and approval. It remains client-only: approval does not yet
+invoke the bridge, mutate a persisted OpenCut project, or replace the FFmpeg
+preview backend.
