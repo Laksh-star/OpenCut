@@ -1,0 +1,22 @@
+#!/bin/sh
+
+set -eu
+
+PACKAGE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ENTRYPOINT="$PACKAGE_ROOT/src/http.ts"
+
+if command -v bun >/dev/null 2>&1; then
+  exec bun run "$ENTRYPOINT"
+fi
+
+if [ -x "$PACKAGE_ROOT/node_modules/.bin/bun" ]; then
+  exec "$PACKAGE_ROOT/node_modules/.bin/bun" run "$ENTRYPOINT"
+fi
+
+if command -v node >/dev/null 2>&1; then
+  exec node --experimental-strip-types "$ENTRYPOINT"
+fi
+
+echo "OpenCut agent HTTP bridge requires Bun or a Node.js release with TypeScript stripping." >&2
+exit 1
+

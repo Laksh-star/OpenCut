@@ -66,6 +66,13 @@ sample plan by default and can import any bridge-compatible JSON plan.
 Run it from the repository root:
 
 ```sh
+OPENCUT_AGENT_ROOT="/absolute/path/to/video-workspace" \
+  apps/agent-bridge/bin/opencut-agent-http
+```
+
+In a second terminal:
+
+```sh
 moon run web:dev
 ```
 
@@ -75,11 +82,13 @@ In the review workspace you can:
 2. Attach the corresponding source video locally; the video never uploads.
 3. Select timeline clips to seek to their exact source in/out points.
 4. Review speed, volume, captions, output duration, and project settings.
-5. Approve and download the unchanged plan for the local renderer.
+5. Approve the plan to persist an OpenCut project record and render its MP4
+   through the local bridge.
+6. Download the unchanged plan whenever you need a portable handoff.
 
 This is intentionally a review boundary, not a claim that the rewrite already
-has a complete editor. Timeline mutation, project persistence, and direct
-render invocation will move behind the native Editor API as that API lands.
+has a complete editor. Timeline mutation and richer project persistence will
+move behind the native Editor API as that API lands.
 
 ## Contributing
 

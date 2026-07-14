@@ -1,7 +1,8 @@
 import { access } from "node:fs/promises";
+import { posix } from "node:path";
 
 import { compileEditPlan } from "./ffmpeg.ts";
-import { readEditPlan, writeEditPlan } from "./files.ts";
+import { readEditPlan, writeEditPlan, writeJsonFile } from "./files.ts";
 import { inspectMedia, runProcess } from "./media.ts";
 import { getWorkspaceRoot, resolveInputPath, resolveOutputPath } from "./paths.ts";
 import { parseEditPlan, type EditPlan } from "./schema.ts";
@@ -10,7 +11,7 @@ const MAX_PREVIEW_SECONDS = 300;
 
 export const capabilities = {
   server: "opencut-agent-bridge",
-  version: "0.1.0",
+  version: "0.2.0",
   adapter: "ffmpeg-preview",
   editorApiConnected: false,
   operations: [
@@ -19,6 +20,7 @@ export const capabilities = {
     "save_edit_plan",
     "compile_edit_plan",
     "render_preview",
+    "approve_and_render_project",
   ],
   constraints: {
     outputFormat: "mp4",
@@ -27,6 +29,43 @@ export const capabilities = {
     workspaceRestricted: true,
   },
 } as const;
+
+export type ProjectRecord = {
+  version: "1";
+  id: string;
+  name: string;
+  status: "rendering" | "rendered" | "failed";
+  editPlanPath: string;
+  outputPath: string;
+  approval: {
+    source: "web-review" | "mcp";
+    approvedAt: string;
+  };
+  render: {
+    requestedLimitSeconds: number;
+    renderedSeconds?: number;
+    completedAt?: string;
+    error?: string;
+  };
+};
+
+const slugify = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "opencut-project";
+
+export const deriveProjectPaths = (plan: EditPlan) => {
+  const outputDirectory = posix.dirname(plan.output.path);
+  const projectDirectory =
+    posix.basename(outputDirectory) === "renders"
+      ? posix.dirname(outputDirectory)
+      : outputDirectory;
+  return {
+    editPlanPath: posix.join(projectDirectory, "approved-edit-plan.json"),
+    projectRecordPath: posix.join(projectDirectory, "opencut.project.json"),
+  };
+};
 
 const resolvePlanAssets = async (root: string, plan: EditPlan) =>
   Promise.all(
@@ -99,4 +138,82 @@ export const renderPlanPreview = async (
     renderedSeconds: Math.min(compiled.durationSeconds, durationSeconds, MAX_PREVIEW_SECONDS),
     ffmpegExitCode: result.exitCode,
   };
+};
+
+export const approveAndRenderProject = async (
+  value: unknown,
+  options: {
+    renderLimitSeconds?: number;
+    approvalSource?: ProjectRecord["approval"]["source"];
+  } = {}
+) => {
+  const root = await getWorkspaceRoot();
+  const { plan, durationSeconds } = validatePlan(value);
+  await resolvePlanAssets(root, plan);
+
+  const requestedLimitSeconds = Math.min(
+    MAX_PREVIEW_SECONDS,
+    Math.max(0.1, options.renderLimitSeconds ?? MAX_PREVIEW_SECONDS)
+  );
+  const requestedPaths = deriveProjectPaths(plan);
+  const editPlanPath = await resolveOutputPath(root, requestedPaths.editPlanPath);
+  const projectRecordPath = await resolveOutputPath(
+    root,
+    requestedPaths.projectRecordPath
+  );
+  const approvedAt = new Date().toISOString();
+  const baseRecord: ProjectRecord = {
+    version: "1",
+    id: slugify(plan.project.name),
+    name: plan.project.name,
+    status: "rendering",
+    editPlanPath: requestedPaths.editPlanPath,
+    outputPath: plan.output.path,
+    approval: {
+      source: options.approvalSource ?? "web-review",
+      approvedAt,
+    },
+    render: { requestedLimitSeconds },
+  };
+
+  await writeEditPlan(editPlanPath, plan);
+  await writeJsonFile(projectRecordPath, baseRecord);
+
+  try {
+    const result = await renderPlanPreview(
+      editPlanPath,
+      undefined,
+      requestedLimitSeconds
+    );
+    const completedAt = new Date().toISOString();
+    const project: ProjectRecord = {
+      ...baseRecord,
+      status: "rendered",
+      render: {
+        ...baseRecord.render,
+        renderedSeconds: result.renderedSeconds,
+        completedAt,
+      },
+    };
+    await writeJsonFile(projectRecordPath, project);
+    return {
+      project,
+      projectRecordPath: requestedPaths.projectRecordPath,
+      editPlanPath: requestedPaths.editPlanPath,
+      outputPath: plan.output.path,
+      durationSeconds,
+      renderedSeconds: result.renderedSeconds,
+    };
+  } catch (error) {
+    const message = (error instanceof Error ? error.message : String(error)).slice(
+      -8_000
+    );
+    const project: ProjectRecord = {
+      ...baseRecord,
+      status: "failed",
+      render: { ...baseRecord.render, error: message },
+    };
+    await writeJsonFile(projectRecordPath, project);
+    throw error;
+  }
 };

@@ -8,14 +8,17 @@ export const readEditPlan = async (path: string) => {
   return parseEditPlan(JSON.parse(contents));
 };
 
-export const writeEditPlan = async (path: string, plan: EditPlan) => {
+export const writeJsonFile = async (path: string, value: unknown) => {
   const temporaryPath = join(
     dirname(path),
     `.${basename(path)}.${process.pid}.${Date.now()}.tmp`
   );
-  await writeFile(temporaryPath, `${JSON.stringify(plan, null, 2)}\n`, {
+  await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
     encoding: "utf8",
     flag: "wx",
   });
   await rename(temporaryPath, path);
 };
+
+export const writeEditPlan = async (path: string, plan: EditPlan) =>
+  writeJsonFile(path, plan);

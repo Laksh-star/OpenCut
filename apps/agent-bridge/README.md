@@ -12,6 +12,7 @@ It does **not** automate the browser, publish media, or claim to be OpenCut's fu
 - `opencut_save_edit_plan`
 - `opencut_compile_edit_plan`
 - `opencut_render_preview`
+- `opencut_approve_and_render_project`
 
 Every file operation is restricted to `OPENCUT_AGENT_ROOT`. Inputs must exist, output directories must already exist, FFmpeg is invoked without a shell, preview duration is capped at five minutes, and no tool uploads or publishes anything.
 
@@ -38,6 +39,18 @@ Start the stdio MCP server directly:
 ```sh
 OPENCUT_AGENT_ROOT="$PWD" apps/agent-bridge/bin/opencut-agent
 ```
+
+Start the loopback-only HTTP bridge used by the web review workspace:
+
+```sh
+OPENCUT_AGENT_ROOT="$PWD" apps/agent-bridge/bin/opencut-agent-http
+```
+
+The HTTP bridge binds to `127.0.0.1:3210`, accepts browser requests only from
+the local OpenCut development origins by default, caps request bodies at 2 MB,
+and permits one approval render at a time. Override the port with
+`OPENCUT_AGENT_HTTP_PORT` or the comma-separated browser origin allowlist with
+`OPENCUT_WEB_ORIGINS`.
 
 FFmpeg and ffprobe must be available on `PATH` for media inspection and preview rendering.
 
@@ -80,7 +93,8 @@ OPENCUT_AGENT_ROOT = "/absolute/path/to/video-workspace"
 
 The MVP timeline is intentionally narrow: sequential video clips, optional per-clip audio control, reframing by fit-and-pad, and optional SRT/VTT captions muxed into MP4. Text, overlays, transitions, keyframes, music mixing, and native OpenCut project synchronization belong in the next adapter version.
 
-The web app's agent review workspace already consumes this same schema for
-visual inspection and approval. It remains client-only: approval does not yet
-invoke the bridge, mutate a persisted OpenCut project, or replace the FFmpeg
-preview backend.
+The web app's agent review workspace consumes this same schema for visual
+inspection and approval. Approval atomically saves `approved-edit-plan.json`
+and `opencut.project.json` beside the project's `renders` directory, invokes
+the bounded FFmpeg backend, and records either the rendered or failed state.
+The bridge remains local-only and never uploads or publishes media.

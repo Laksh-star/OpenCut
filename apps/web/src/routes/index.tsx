@@ -9,6 +9,7 @@ import {
   Film,
   FolderOpen,
   Gauge,
+  LoaderCircle,
   Maximize2,
   Pause,
   Play,
@@ -33,7 +34,19 @@ import {
 
 export const Route = createFileRoute("/")({ component: AgentReviewWorkspace })
 
-type ReviewState = "review" | "approved"
+type ReviewState = "review" | "rendering" | "rendered" | "failed"
+
+type ApprovalResult = {
+  projectRecordPath: string
+  editPlanPath: string
+  outputPath: string
+  durationSeconds: number
+  renderedSeconds: number
+}
+
+const bridgeUrl = (
+  import.meta.env.VITE_OPENCUT_BRIDGE_URL ?? "http://127.0.0.1:3210"
+).replace(/\/$/, "")
 
 function AgentReviewWorkspace() {
   const [plan, setPlan] = useState<EditPlan>(sampleEditPlan)
@@ -41,6 +54,9 @@ function AgentReviewWorkspace() {
     sampleEditPlan.timeline.clips[0]?.id ?? "",
   )
   const [reviewState, setReviewState] = useState<ReviewState>("review")
+  const [approvalResult, setApprovalResult] = useState<ApprovalResult | null>(null)
+  const [approvalError, setApprovalError] = useState<string | null>(null)
+  const [bridgeOnline, setBridgeOnline] = useState<boolean | null>(null)
   const [planError, setPlanError] = useState<string | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [videoName, setVideoName] = useState<string | null>(null)
@@ -66,6 +82,19 @@ function AgentReviewWorkspace() {
     }
   }, [videoUrl])
 
+  useEffect(() => {
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 2_500)
+    void fetch(`${bridgeUrl}/health`, { signal: controller.signal })
+      .then((response) => setBridgeOnline(response.ok))
+      .catch(() => setBridgeOnline(false))
+      .finally(() => window.clearTimeout(timeout))
+    return () => {
+      window.clearTimeout(timeout)
+      controller.abort()
+    }
+  }, [])
+
   async function handlePlanFile(file: File | undefined) {
     if (!file) return
 
@@ -74,6 +103,8 @@ function AgentReviewWorkspace() {
       setPlan(importedPlan)
       setSelectedClipId(importedPlan.timeline.clips[0]?.id ?? "")
       setReviewState("review")
+      setApprovalResult(null)
+      setApprovalError(null)
       setPlanError(null)
     } catch (error) {
       setPlanError(error instanceof Error ? error.message : "Could not read this edit plan")
@@ -90,7 +121,6 @@ function AgentReviewWorkspace() {
 
   function selectSegment(segment: TimelineSegment) {
     setSelectedClipId(segment.clip.id)
-    setReviewState("review")
     if (videoRef.current) {
       videoRef.current.currentTime = segment.clip.sourceStart
       videoRef.current.pause()
@@ -125,6 +155,38 @@ function AgentReviewWorkspace() {
       video.pause()
       video.currentTime = selectedSegment.clip.sourceStart
       setIsPlaying(false)
+    }
+  }
+
+  async function approveAndRender() {
+    if (reviewState === "rendering" || reviewState === "rendered") return
+
+    let bridgeResponded = false
+    setReviewState("rendering")
+    setApprovalError(null)
+    setApprovalResult(null)
+    try {
+      const response = await fetch(`${bridgeUrl}/v1/projects/approve-and-render`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan, renderLimitSeconds: 300 }),
+      })
+      bridgeResponded = true
+      const payload = (await response.json()) as ApprovalResult & { error?: string }
+      if (!response.ok) {
+        throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+      }
+      setApprovalResult(payload)
+      setBridgeOnline(true)
+      setReviewState("rendered")
+    } catch (error) {
+      setBridgeOnline(bridgeResponded)
+      setApprovalError(
+        error instanceof Error
+          ? error.message
+          : "The local bridge could not render this project",
+      )
+      setReviewState("failed")
     }
   }
 
@@ -187,9 +249,29 @@ function AgentReviewWorkspace() {
             <ChevronDown className="size-3" />
           </button>
           <span className="h-5 w-px bg-white/10" />
-          <span className="flex items-center gap-1.5 text-[11px] text-emerald-300">
-            <span className="size-1.5 rounded-full bg-emerald-400" />
-            Saved locally
+          <span
+            className={`flex items-center gap-1.5 text-[11px] ${
+              bridgeOnline === true
+                ? "text-emerald-300"
+                : bridgeOnline === false
+                  ? "text-red-300"
+                  : "text-amber-200"
+            }`}
+          >
+            <span
+              className={`size-1.5 rounded-full ${
+                bridgeOnline === true
+                  ? "bg-emerald-400"
+                  : bridgeOnline === false
+                    ? "bg-red-400"
+                    : "animate-pulse bg-amber-300"
+              }`}
+            />
+            {bridgeOnline === true
+              ? "Bridge online"
+              : bridgeOnline === false
+                ? "Bridge offline"
+                : "Checking bridge"}
           </span>
         </div>
 
@@ -200,15 +282,30 @@ function AgentReviewWorkspace() {
           </Button>
           <Button
             size="lg"
-            className={
-              reviewState === "approved"
-                ? "bg-emerald-400 text-emerald-950 hover:bg-emerald-300"
-                : "bg-amber-300 text-zinc-950 hover:bg-amber-200"
-            }
-            onClick={() => setReviewState("approved")}
+            className={reviewState === "rendered"
+              ? "bg-emerald-400 text-emerald-950 hover:bg-emerald-300"
+              : reviewState === "failed"
+                ? "bg-red-300 text-red-950 hover:bg-red-200"
+                : "bg-amber-300 text-zinc-950 hover:bg-amber-200"}
+            disabled={reviewState === "rendering" || reviewState === "rendered"}
+            onClick={() => void approveAndRender()}
           >
-            {reviewState === "approved" ? <Check /> : <Sparkles />}
-            {reviewState === "approved" ? "Approved" : "Approve plan"}
+            {reviewState === "rendering" ? (
+              <LoaderCircle className="animate-spin" />
+            ) : reviewState === "rendered" ? (
+              <Check />
+            ) : reviewState === "failed" ? (
+              <RotateCcw />
+            ) : (
+              <Sparkles />
+            )}
+            {reviewState === "rendering"
+              ? "Rendering…"
+              : reviewState === "rendered"
+                ? "Rendered"
+                : reviewState === "failed"
+                  ? "Retry render"
+                  : "Approve & render"}
           </Button>
         </div>
       </header>
@@ -351,16 +448,51 @@ function AgentReviewWorkspace() {
                 <InspectorValue icon={<Clock3 />} label="Timeline length" value={`${selectedSegment.durationSeconds.toFixed(1)}s`} />
               </InspectorSection>
               <InspectorSection title="Review state">
-                <div className={`rounded-lg border p-3 ${reviewState === "approved" ? "border-emerald-400/25 bg-emerald-400/8" : "border-amber-300/20 bg-amber-300/[0.06]"}`}>
-                  <p className={`flex items-center gap-2 text-xs font-medium ${reviewState === "approved" ? "text-emerald-300" : "text-amber-200"}`}>
-                    {reviewState === "approved" ? <Check className="size-3.5" /> : <Sparkles className="size-3.5" />}
-                    {reviewState === "approved" ? "Approved for render" : "Awaiting approval"}
+                <div className={`rounded-lg border p-3 ${
+                  reviewState === "rendered"
+                    ? "border-emerald-400/25 bg-emerald-400/8"
+                    : reviewState === "failed"
+                      ? "border-red-400/25 bg-red-400/8"
+                      : "border-amber-300/20 bg-amber-300/[0.06]"
+                }`}>
+                  <p className={`flex items-center gap-2 text-xs font-medium ${
+                    reviewState === "rendered"
+                      ? "text-emerald-300"
+                      : reviewState === "failed"
+                        ? "text-red-300"
+                        : "text-amber-200"
+                  }`}>
+                    {reviewState === "rendering" ? (
+                      <LoaderCircle className="size-3.5 animate-spin" />
+                    ) : reviewState === "rendered" ? (
+                      <Check className="size-3.5" />
+                    ) : reviewState === "failed" ? (
+                      <CircleAlert className="size-3.5" />
+                    ) : (
+                      <Sparkles className="size-3.5" />
+                    )}
+                    {reviewState === "rendering"
+                      ? "Rendering locally"
+                      : reviewState === "rendered"
+                        ? "Project rendered"
+                        : reviewState === "failed"
+                          ? "Render failed"
+                          : "Awaiting approval"}
                   </p>
                   <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
-                    {reviewState === "approved"
-                      ? "The agent bridge can render this exact plan without changing the cuts."
-                      : "Review both clips, captions, and output settings before handing the plan to the renderer."}
+                    {reviewState === "rendering"
+                      ? "The local bridge saved the approved plan and is rendering its MP4 output."
+                      : reviewState === "rendered"
+                        ? `Saved ${approvalResult?.outputPath ?? plan.output.path}`
+                        : reviewState === "failed"
+                          ? approvalError ?? "Start the local bridge and retry the render."
+                          : "Review both clips, captions, and output settings before handing the plan to the renderer."}
                   </p>
+                  {reviewState === "rendered" && approvalResult ? (
+                    <p className="mt-2 border-t border-emerald-300/10 pt-2 font-mono text-[9px] text-emerald-200/65">
+                      Project: {approvalResult.projectRecordPath}
+                    </p>
+                  ) : null}
                 </div>
               </InspectorSection>
             </div>
@@ -383,6 +515,8 @@ function AgentReviewWorkspace() {
                 setPlan(sampleEditPlan)
                 setSelectedClipId(sampleEditPlan.timeline.clips[0]?.id ?? "")
                 setReviewState("review")
+                setApprovalResult(null)
+                setApprovalError(null)
                 setPlanError(null)
               }}
             >

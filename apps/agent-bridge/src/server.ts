@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v4";
 
 import {
+  approveAndRenderProject,
   capabilities,
   compilePlanFile,
   inspectWorkspaceMedia,
@@ -17,7 +18,7 @@ const jsonResult = (value: unknown) => ({
 
 export const buildServer = () => {
   const server = new McpServer(
-    { name: "opencut-agent-bridge", version: "0.1.0" },
+    { name: "opencut-agent-bridge", version: "0.2.0" },
     {
       instructions:
         "Inspect media before creating an edit plan. Validate, save, and compile the plan before rendering. Rendering only creates a local preview; this server never publishes media.",
@@ -100,6 +101,26 @@ export const buildServer = () => {
     },
     async ({ planPath, outputPath, durationSeconds }) =>
       jsonResult(await renderPlanPreview(planPath, outputPath, durationSeconds))
+  );
+
+  server.registerTool(
+    "opencut_approve_and_render_project",
+    {
+      description:
+        "Persist an approved OpenCut project record and edit plan, then render its bounded local MP4 output. This never publishes or uploads media.",
+      inputSchema: z.object({
+        plan: editPlanSchema,
+        renderLimitSeconds: z.number().min(0.1).max(300).default(300),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    },
+    async ({ plan, renderLimitSeconds }) =>
+      jsonResult(
+        await approveAndRenderProject(plan, {
+          renderLimitSeconds,
+          approvalSource: "mcp",
+        })
+      )
   );
 
   return server;
