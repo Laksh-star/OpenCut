@@ -47,6 +47,16 @@ moon run api:dev       # localhost:8787
 moon run desktop:dev   # see apps/desktop/README.md
 ```
 
+## AI agent bridge
+
+This fork includes an early, local-first MCP companion at
+[`apps/agent-bridge`](apps/agent-bridge). It gives AI agents a safe edit-plan
+workflow and FFmpeg preview renderer while OpenCut's native Editor API, MCP
+server, and headless mode are still under development.
+
+See the [agent bridge documentation](apps/agent-bridge/README.md) for the tool
+contract, setup, safety boundaries, and agent configuration.
+
 ## Contributing
 
 We're not set up to take outside contributions yet while the architecture is being designed. If you want to follow along, ask questions, or just hang out, [join the Discord](https://discord.gg/zmR9N35cjK) or [open an issue](https://github.com/opencut-app/opencut/issues).

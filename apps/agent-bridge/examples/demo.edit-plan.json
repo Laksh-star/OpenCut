@@ -1,0 +1,49 @@
+{
+  "version": "1",
+  "project": {
+    "name": "Agent-created vertical reel",
+    "width": 1080,
+    "height": 1920,
+    "frameRate": 30,
+    "background": "#000000"
+  },
+  "assets": [
+    {
+      "id": "interview",
+      "path": "projects/demo-reel/source/interview.mp4",
+      "kind": "video"
+    },
+    {
+      "id": "captions",
+      "path": "projects/demo-reel/captions.srt",
+      "kind": "captions"
+    }
+  ],
+  "timeline": {
+    "clips": [
+      {
+        "id": "hook",
+        "assetId": "interview",
+        "sourceStart": 42.2,
+        "sourceEnd": 49.8,
+        "speed": 1,
+        "volume": 1,
+        "includeAudio": true
+      },
+      {
+        "id": "explanation",
+        "assetId": "interview",
+        "sourceStart": 78.1,
+        "sourceEnd": 94.4,
+        "speed": 1.05,
+        "volume": 1,
+        "includeAudio": true
+      }
+    ],
+    "captionsAssetId": "captions"
+  },
+  "output": {
+    "path": "projects/demo-reel/renders/preview.mp4",
+    "overwrite": false
+  }
+}
