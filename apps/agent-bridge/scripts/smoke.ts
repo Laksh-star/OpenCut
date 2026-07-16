@@ -18,8 +18,8 @@ const capabilityResult = await client.callTool({
   arguments: {},
 });
 
-if (tools.tools.length !== 6) {
-  throw new Error(`Expected 6 tools, received ${tools.tools.length}`);
+if (tools.tools.length !== 7) {
+  throw new Error(`Expected 7 tools, received ${tools.tools.length}`);
 }
 
 console.log(

@@ -34,6 +34,12 @@ import {
   type EditPlan,
   type TimelineSegment,
 } from "#/lib/edit-plan.ts"
+import {
+  candidateForSelection,
+  mediaAssetForPlan,
+  type ReviewCandidate,
+  type ReviewSession,
+} from "#/lib/review-session.ts"
 
 export const Route = createFileRoute("/")({ component: AgentReviewWorkspace })
 
@@ -71,6 +77,9 @@ function AgentReviewWorkspace() {
   const [captionsEnabled, setCaptionsEnabled] = useState(false)
   const [captionsLoading, setCaptionsLoading] = useState(false)
   const [captionsError, setCaptionsError] = useState<string | null>(null)
+  const [reviewSession, setReviewSession] = useState<ReviewSession | null>(null)
+  const [activeReviewCandidateId, setActiveReviewCandidateId] = useState<string | null>(null)
+  const [sessionError, setSessionError] = useState<string | null>(null)
   const planInputRef = useRef<HTMLInputElement>(null)
   const videoInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -107,7 +116,7 @@ function AgentReviewWorkspace() {
 
   useEffect(() => {
     return () => {
-      if (videoUrl) URL.revokeObjectURL(videoUrl)
+      if (videoUrl?.startsWith("blob:")) URL.revokeObjectURL(videoUrl)
     }
   }, [videoUrl])
 
@@ -125,7 +134,25 @@ function AgentReviewWorkspace() {
   }, [])
 
   useEffect(() => {
-    const encodedPlan = new URLSearchParams(window.location.search).get("plan")
+    const parameters = new URLSearchParams(window.location.search)
+    const sessionId = parameters.get("session")
+    if (sessionId) {
+      const controller = new AbortController()
+      void fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}`, { signal: controller.signal })
+        .then(async (response) => {
+          const payload = (await response.json()) as ReviewSession & { error?: string }
+          if (!response.ok) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+          setReviewSession(payload)
+          const candidate = candidateForSelection(payload) ?? payload.candidates[0]
+          if (candidate) applyReviewCandidate(payload, candidate)
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted) setSessionError(error instanceof Error ? error.message : "Could not load review session")
+        })
+      return () => controller.abort()
+    }
+
+    const encodedPlan = parameters.get("plan")
     if (!encodedPlan) return
 
     try {
@@ -144,6 +171,43 @@ function AgentReviewWorkspace() {
     }
   }, [])
 
+  function applyReviewCandidate(session: ReviewSession, candidate: ReviewCandidate) {
+    setActiveReviewCandidateId(candidate.id)
+    setPlan(candidate.plan)
+    setSelectedClipId(candidate.plan.timeline.clips[0]?.id ?? "")
+    setCurrentSourceTime(candidate.plan.timeline.clips[0]?.sourceStart ?? 0)
+    setReviewState(candidate.status === "rendered" || candidate.outputExists ? "rendered" : candidate.status === "failed" ? "failed" : candidate.status === "rendering" ? "rendering" : "review")
+    setApprovalResult(null)
+    setApprovalError(candidate.error ?? null)
+    setPlanError(null)
+    const asset = mediaAssetForPlan(session, candidate.plan)
+    const sessionId = new URLSearchParams(window.location.search).get("session")
+    if (asset && sessionId) {
+      setVideoUrl(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(asset.id)}`)
+      setVideoName(asset.label)
+    }
+  }
+
+  async function selectReviewCandidate(candidateId: string) {
+    if (!reviewSession) return
+    setSessionError(null)
+    try {
+      const sessionId = new URLSearchParams(window.location.search).get("session")
+      const response = await fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId ?? "")}/select`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidateId }),
+      })
+      const payload = (await response.json()) as ReviewSession & { error?: string }
+      if (!response.ok) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+      setReviewSession(payload)
+      const candidate = candidateForSelection(payload)
+      if (candidate) applyReviewCandidate(payload, candidate)
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : "Could not select candidate")
+    }
+  }
+
   useEffect(() => {
     const controller = new AbortController()
     setCaptionCues([])
@@ -155,8 +219,12 @@ function AgentReviewWorkspace() {
     }
 
     setCaptionsLoading(true)
+    const sessionId = new URLSearchParams(window.location.search).get("session")
+    const captionsUrl = reviewSession && sessionId && activeReviewCandidateId
+      ? `${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/candidates/${encodeURIComponent(activeReviewCandidateId)}/captions`
+      : `${bridgeUrl}/v1/assets/text?path=${encodeURIComponent(captionsPath)}`
     void fetch(
-      `${bridgeUrl}/v1/assets/text?path=${encodeURIComponent(captionsPath)}`,
+      captionsUrl,
       { signal: controller.signal },
     )
       .then(async (response) => {
@@ -178,7 +246,7 @@ function AgentReviewWorkspace() {
         if (!controller.signal.aborted) setCaptionsLoading(false)
       })
     return () => controller.abort()
-  }, [captionsPath])
+  }, [activeReviewCandidateId, captionsPath, reviewSession])
 
   async function handlePlanFile(file: File | undefined) {
     if (!file) return
@@ -199,7 +267,7 @@ function AgentReviewWorkspace() {
 
   function handleVideoFile(file: File | undefined) {
     if (!file) return
-    if (videoUrl) URL.revokeObjectURL(videoUrl)
+    if (videoUrl?.startsWith("blob:")) URL.revokeObjectURL(videoUrl)
     setVideoUrl(URL.createObjectURL(file))
     setVideoName(file.name)
     setCurrentSourceTime(selectedSegment?.clip.sourceStart ?? 0)
@@ -280,19 +348,27 @@ function AgentReviewWorkspace() {
     setApprovalError(null)
     setApprovalResult(null)
     try {
-      const response = await fetch(`${bridgeUrl}/v1/projects/approve-and-render`, {
+      const sessionId = new URLSearchParams(window.location.search).get("session")
+      const selectedCandidate = reviewSession ? candidateForSelection(reviewSession) : null
+      if (reviewSession && !selectedCandidate) throw new Error("Select a candidate before approval")
+      const response = await fetch(reviewSession
+        ? `${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId ?? "")}/approve-and-render`
+        : `${bridgeUrl}/v1/projects/approve-and-render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan, renderLimitSeconds: 300 }),
+        body: JSON.stringify(reviewSession
+          ? { candidateId: selectedCandidate?.id, approvalToken: reviewSession.approvalToken, renderLimitSeconds: 300 }
+          : { plan, renderLimitSeconds: 300 }),
       })
       bridgeResponded = true
-      const payload = (await response.json()) as ApprovalResult & { error?: string }
+      const payload = (await response.json()) as ApprovalResult & { error?: string; session?: ReviewSession }
       if (!response.ok) {
         throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
       }
       setApprovalResult(payload)
       setBridgeOnline(true)
       setReviewState("rendered")
+      if (payload.session) setReviewSession(payload.session)
     } catch (error) {
       setBridgeOnline(bridgeResponded)
       setApprovalError(
@@ -390,10 +466,12 @@ function AgentReviewWorkspace() {
         </div>
 
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="lg" onClick={() => planInputRef.current?.click()}>
-            <Upload data-icon="inline-start" />
-            Import plan
-          </Button>
+          {!reviewSession ? (
+            <Button variant="ghost" size="lg" onClick={() => planInputRef.current?.click()}>
+              <Upload data-icon="inline-start" />
+              Import plan
+            </Button>
+          ) : null}
           <Button
             size="lg"
             className={reviewState === "rendered"
@@ -401,7 +479,7 @@ function AgentReviewWorkspace() {
               : reviewState === "failed"
                 ? "bg-red-300 text-red-950 hover:bg-red-200"
                 : "bg-amber-300 text-zinc-950 hover:bg-amber-200"}
-            disabled={reviewState === "rendering" || reviewState === "rendered"}
+            disabled={reviewState === "rendering" || reviewState === "rendered" || Boolean(reviewSession && !reviewSession.selectedCandidateId)}
             onClick={() => void approveAndRender()}
           >
             {reviewState === "rendering" ? (
@@ -423,6 +501,44 @@ function AgentReviewWorkspace() {
           </Button>
         </div>
       </header>
+
+      {reviewSession ? (
+        <section className="border-b border-white/10 bg-[#111214] px-4 py-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium text-zinc-200">{reviewSession.title}</p>
+              <p className="mt-0.5 text-[10px] text-zinc-500">Select a candidate for review. Selection never authorizes rendering.</p>
+            </div>
+            <span className="text-[10px] text-zinc-500">{reviewSession.candidates.length} candidates</span>
+          </div>
+          <div className="grid gap-2 md:grid-cols-3">
+            {reviewSession.candidates.map((candidate) => {
+              const selected = candidate.id === reviewSession.selectedCandidateId
+              const rendered = candidate.status === "rendered" || candidate.outputExists
+              return (
+                <button
+                  key={candidate.id}
+                  className={`rounded-lg border p-3 text-left transition ${selected ? "border-amber-300/70 bg-amber-300/10" : "border-white/10 bg-white/[0.025] hover:border-white/25"}`}
+                  onClick={() => void selectReviewCandidate(candidate.id)}
+                  aria-pressed={selected}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-xs font-medium text-zinc-100">{candidate.title}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[9px] ${rendered ? "bg-emerald-400/15 text-emerald-300" : selected ? "bg-amber-300/15 text-amber-200" : "bg-white/5 text-zinc-500"}`}>
+                      {rendered ? "Rendered" : selected ? "Selected" : "Ready"}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 line-clamp-2 text-[10px] leading-relaxed text-zinc-500">{candidate.summary || "Agent-proposed edit"}</p>
+                  <p className="mt-2 font-mono text-[9px] text-zinc-600">{formatTimecode(getTimelineDuration(candidate.plan))} · {candidate.plan.timeline.clips.length} clips</p>
+                </button>
+              )
+            })}
+          </div>
+          {sessionError ? <p className="mt-2 text-xs text-red-300">{sessionError}</p> : null}
+        </section>
+      ) : sessionError ? (
+        <div className="border-b border-red-400/20 bg-red-400/10 px-4 py-3 text-xs text-red-200">{sessionError}</div>
+      ) : null}
 
       {planError ? (
         <div className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-red-400/30 bg-red-400/10 p-3 text-xs text-red-100">
@@ -456,13 +572,13 @@ function AgentReviewWorkspace() {
               </div>
             ))}
 
-            <button
+            {!reviewSession ? <button
               className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-white/15 py-3 text-[11px] text-zinc-500 transition hover:border-amber-300/40 hover:text-amber-200"
               onClick={() => videoInputRef.current?.click()}
             >
               <FolderOpen className="size-3.5" />
               {videoName ? "Replace source video" : "Attach source video"}
-            </button>
+            </button> : null}
           </div>
 
           <div className="mt-3 border-t border-white/10">
@@ -660,7 +776,7 @@ function AgentReviewWorkspace() {
             <span>{formatTimecode(totalDuration)}</span>
           </div>
           <div className="flex items-center gap-2">
-            <Button
+            {!reviewSession ? <Button
               variant="ghost"
               size="sm"
               onClick={() => {
@@ -674,7 +790,7 @@ function AgentReviewWorkspace() {
               }}
             >
               <RotateCcw /> Reset sample
-            </Button>
+            </Button> : null}
             <Button variant="ghost" size="sm" onClick={downloadPlan}>
               <Download /> Download plan
             </Button>

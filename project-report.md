@@ -1,0 +1,361 @@
+# OpenCut AI-Agent Extension Project Report
+
+**Status date:** 16 July 2026
+**Fork:** [Laksh-star/OpenCut](https://github.com/Laksh-star/OpenCut)
+**Upstream:** [OpenCut-app/OpenCut](https://github.com/OpenCut-app/OpenCut)
+**Working branch:** `codex/agent-bridge-mvp`
+**Branch status:** pushed to `origin/codex/agent-bridge-mvp`
+
+## 1. Executive summary
+
+We extended the OpenCut rewrite with a working, local-first path from an AI agent's edit decision to a human-reviewed, rendered MP4.
+
+The fork now contains:
+
+- an MCP server that lets agents inspect local media, validate and save structured edit plans, compile FFmpeg commands, and render previews;
+- a browser-based OpenCut review workspace for importing an agent plan, attaching the source video locally, reviewing timeline decisions, and approving the render;
+- opaque, persistent candidate-review sessions that compare multiple isolated edits without putting plan JSON in the URL;
+- HTTP byte-range streaming for multi-gigabyte local sources, so the reviewer no longer reselects the file in the browser;
+- a loopback-only HTTP bridge that connects the review UI to the renderer;
+- persistent approval and project records;
+- automated schema, path-security, rendering, project-persistence, and web-model tests;
+- a completed real-video demonstration using the 1986 Swami Ranganathananda interview;
+- a private Sites visualization explaining the complete behind-the-scenes workflow.
+
+This is a real MVP seam around the OpenCut rewrite. It does not claim that OpenCut's future native Editor API, MCP server, or headless renderer is already complete. The current render adapter is deliberately isolated behind an edit-plan contract so it can later be replaced by OpenCut-native capabilities.
+
+## 2. What we started with
+
+OpenCut is in the middle of a ground-up rewrite. Its roadmap includes a native Editor API, third-party plugins, an MCP server, headless rendering, and a scripting surface, but those pieces are not yet available as a complete agent workflow.
+
+We therefore used the fork to prove the workflow and contract now:
+
+1. Let an agent inspect and understand source media.
+2. Have the agent propose a declarative, portable edit plan.
+3. Present the plan and source video to a human inside an OpenCut-branded review workspace.
+4. Require explicit approval before rendering.
+5. Persist the approved plan and project state.
+6. Render locally without uploading or publishing the media.
+7. Verify and deliver the resulting clip.
+
+## 3. Repository and Git work
+
+The fork is configured with two remotes:
+
+- `origin` points to `Laksh-star/OpenCut`;
+- `upstream` points to `OpenCut-app/OpenCut`.
+
+Four completed extension commits were already present on the pushed feature branch before the current stabilization milestone:
+
+| Commit | Change | Result |
+| --- | --- | --- |
+| `e07828d9` | Add OpenCut MCP agent bridge | Introduced the schema, MCP tools, safe filesystem layer, FFmpeg compiler/renderer, tests, examples, and documentation. |
+| `a3aac399` | Add agent edit plan review workspace | Replaced the placeholder web page with a visual plan-review experience backed by the shared bridge schema. |
+| `7a16bcf5` | Connect plan approval to local rendering | Added the local HTTP approval bridge, project persistence, approval UI states, and end-to-end approval/render smoke coverage. |
+| `43d34448` | Add interactive review playback controls | Added URL plan loading, source-accurate playback, seek/scrub controls, caption parsing, and caption overlays. |
+
+The current milestone adds review-session registration and persistence,
+isolated candidate projects, secure local media/caption routes, comparison UI,
+a one-command launcher, and expanded test coverage. Exact branch totals should
+be read from Git rather than treated as a fixed figure in this cumulative report.
+
+## 4. Architecture delivered
+
+```mermaid
+flowchart LR
+    U[Human request] --> A[AI agent / Codex]
+    A --> T[Transcription and editorial analysis]
+    T --> P[Validated edit-plan JSON]
+    P --> M[MCP agent bridge]
+    P --> W[OpenCut review workspace]
+    W --> H{Human approval}
+    H -- Revise --> A
+    H -- Approve --> L[Loopback HTTP bridge]
+    L --> S[Approved plan and project record]
+    L --> F[Bounded FFmpeg renderer]
+    F --> V[MP4 plus FFprobe verification]
+
+    subgraph Local-only boundary
+      M
+      W
+      L
+      S
+      F
+      V
+    end
+```
+
+### 4.1 Declarative edit-plan contract
+
+The new version-1 schema defines:
+
+- project name, width, height, frame rate, and background;
+- video and caption assets;
+- sequential clips with source in/out points;
+- per-clip speed, volume, and audio inclusion;
+- optional SRT/VTT captions;
+- MP4 output path and overwrite behavior.
+
+Validation rejects duplicate IDs, missing assets, caption/video type mismatches, invalid clip ranges, unsupported output formats, and unsafe values. The web UI imports the same schema directly, avoiding a second incompatible plan model.
+
+### 4.2 MCP agent bridge
+
+The new `apps/agent-bridge` package exposes seven tools:
+
+1. `opencut_capabilities`
+2. `opencut_inspect_media`
+3. `opencut_validate_edit_plan`
+4. `opencut_save_edit_plan`
+5. `opencut_compile_edit_plan`
+6. `opencut_render_preview`
+7. `opencut_approve_and_render_project`
+
+The agent can inspect media with FFprobe, calculate output duration, atomically save a plan, inspect the exact shell-free FFmpeg argument list, render a bounded preview, or persist and render an explicitly approved project.
+
+### 4.3 Safe local execution boundary
+
+The bridge was designed as a constrained local adapter:
+
+- every input and output must remain inside `OPENCUT_AGENT_ROOT`;
+- parent traversal and symlink escapes are rejected;
+- referenced input files must exist; safe nested output directories are created inside the configured root;
+- FFmpeg is launched directly without a shell;
+- preview/render duration is capped at five minutes;
+- process output is bounded;
+- only MP4 output is supported in this MVP;
+- no upload or publishing operation exists.
+
+### 4.4 FFmpeg compilation and rendering
+
+The compiler converts sequential plan clips into deterministic FFmpeg arguments. It supports:
+
+- source trimming;
+- clip speed changes for video and audio;
+- volume control;
+- generated silence when clip audio is disabled;
+- fit-and-pad reframing to the project canvas;
+- target frame-rate normalization;
+- sequential audio/video concatenation;
+- optional captions muxed as `mov_text`;
+- H.264 video, AAC audio, and fast-start MP4 output.
+
+The FFmpeg adapter is an implementation detail behind the plan contract. It is intended to be swapped for OpenCut's native editor/headless renderer when those APIs are ready.
+
+### 4.5 OpenCut agent review workspace
+
+The web app now presents a usable review boundary rather than a placeholder page. It can:
+
+- load the real sample plan by default;
+- import another bridge-compatible JSON plan;
+- attach a local video through a browser object URL, without uploading it;
+- display project media, captions, project settings, and output duration;
+- map source clips onto a sequential output timeline;
+- select a clip, seek to its exact source in-point, and stop at its out-point;
+- show speed, volume, source range, and clip duration;
+- download the unchanged plan for handoff;
+- detect whether the local render bridge is online;
+- show review, rendering, rendered, retry, and failure states;
+- send an approved plan to the local bridge through **Approve & render**.
+
+### 4.6 Approval, persistence, and local HTTP bridge
+
+The new HTTP bridge binds to `127.0.0.1:3210` and provides:
+
+- `GET /health` for bridge status;
+- `POST /v1/projects/approve-and-render` for approval-triggered rendering;
+- a default allowlist limited to the local OpenCut development origins;
+- a 2 MB request-body cap;
+- one approval render at a time;
+- schema validation before any file or render operation.
+
+On approval, the service atomically writes:
+
+- `approved-edit-plan.json` — the exact approved plan;
+- `opencut.project.json` — project identity, approval source/time, render state, output path, duration, completion time, or failure details.
+
+The record transitions through `rendering` to either `rendered` or `failed`, giving later OpenCut integrations a durable project-level handoff.
+
+### 4.7 Operational stabilization and candidate review sessions
+
+The fork now supports a complete candidate-review session rather than a long
+`?plan=<json>` handoff:
+
+- an agent writes `review-session.json` plus one plan per isolated candidate;
+- the bridge registers the manifest and returns an opaque, process-local session ID;
+- the browser receives only `?session=<id>` and restores state from the bridge;
+- candidate cards expose title, summary, duration, clip count, and status;
+- selecting a candidate persists the choice but does not authorize rendering;
+- only the visible **Approve & render** action can start FFmpeg, using a session approval token;
+- `GET`/`HEAD` media requests support HTTP byte ranges and authorize only assets listed in the session;
+- caption requests are tied to a candidate plan rather than accepting an arbitrary session path;
+- existing output files are detected and shown as rendered after refresh;
+- approved plan, project record, and MP4 remain inside the selected candidate directory;
+- missing nested output directories are created only after their nearest existing ancestor is verified inside `OPENCUT_AGENT_ROOT`;
+- `opencut-review <review-session.json>` starts the bridge and web UI and prints the short review URL.
+
+The legacy single-plan import path remains available for compatibility, but the
+session flow is now the recommended operational path for large real videos.
+
+## 5. Real-video demonstration completed
+
+### 5.1 Source and transcription
+
+We tested the workflow with **“Swami Ranganathananda on the Ray Martin Show - 1986”** rather than synthetic sample media.
+
+The local source was copied into the video workspace and inspected:
+
+- source duration: `733.216508` seconds (about 12 minutes 13 seconds);
+- source size: `36,269,372` bytes;
+- primary transcription: 13 one-minute chunks;
+- focused refinement pass: 9 shorter chunks covering the editorial area;
+- combined transcript: approximately 1,815 words;
+- transcription service: OpenRouter audio transcription using `openai/whisper-large-v3`;
+- recorded primary transcription cost: approximately `$0.0183`;
+- recorded refinement cost: approximately `$0.00224`.
+
+No API key is stored in the project artifacts or this report.
+
+### 5.2 Editorial concept and edit plan
+
+The chosen short-form concept was **“The Matchstick Within”**, built around the analogy that human potential is like fire hidden in a matchstick.
+
+The agent selected two source ranges:
+
+| Clip | Source range | Speed | Purpose |
+| --- | --- | --- | --- |
+| `fire-analogy` | `595s–625s` | `1.15x` | Establish the matchstick/fire analogy and the need to “strike” it. |
+| `human-potential` | `628s–668s` | `1.15x` | Connect the analogy to training the mind and unfolding human potential. |
+
+The plan targets 1280×720 at 25 fps, retains the source audio, and includes a curated eight-cue caption track.
+
+### 5.3 Review and approval
+
+The plan and source video were loaded into the OpenCut review workspace. The timeline, source points, playback, speed, volume, captions, and projected output duration were reviewed visually.
+
+The plan was then approved through the UI. The local bridge recorded the approval source as `web-review`, saved the approved plan, created the project record, and launched the local render.
+
+### 5.4 Rendered output
+
+The completed MP4 was verified with FFprobe:
+
+- status: `rendered`;
+- duration: `60.880000` seconds;
+- video: H.264, 1280×720, 25 fps;
+- audio: AAC;
+- subtitles: `mov_text`;
+- size: `4,180,105` bytes;
+- average bitrate: `549,291` bits/s;
+- SHA-256: `daa23f007dee243f91bc1aaa9b15c041d5d22d5adb1201ff8bce48be19f0d669`.
+
+Contact sheets were also created for the selected source section and the final output to support quick visual QA.
+
+## 6. Local artifacts and source-control boundaries
+
+The work is intentionally split across three local areas:
+
+| Area | Purpose | Git status |
+| --- | --- | --- |
+| `OpenCut/` | Fork source code, tests, and documentation | Feature branch pushed to `Laksh-star/OpenCut`. |
+| `../projects/ranganathananda-highlight/` | Source media, transcripts, captions, plans, project record, contact sheets, and final render | Local workspace artifacts; not committed to the fork. |
+| `../opencut-workflow-site/` | Standalone workflow-explainer site | Separately versioned and deployed through Sites. |
+
+Keeping the source video and generated media outside the fork avoids committing large media files or potentially sensitive local project material to GitHub.
+
+## 7. Published workflow explainer
+
+A standalone behind-the-scenes visualization was created and then updated to reflect the completed implementation rather than the earlier planned state. It now explains the nine-stage flow from request and consent through transcription, agent decisions, OpenCut review, approval, persistence, rendering, and verification.
+
+Production URL: [OpenCut behind the scenes](https://opencut-behind-the-scenes.lakshyindy.chatgpt.site)
+
+The Sites project is currently private and owner-only. The published page preserves a sandboxed iframe and content-security policies in both the outer document and embedded visualization.
+
+## 8. Verification record
+
+The following checks were rerun on 16 July 2026 using the repo-pinned Bun 1.3.11 executable:
+
+| Check | Result |
+| --- | --- |
+| Agent bridge unit tests | **Pass:** 14 tests across schema, FFmpeg compilation, byte ranges, path security, project paths, review-session persistence, and candidate isolation. |
+| Agent bridge TypeScript check | **Pass:** `tsc --noEmit`. |
+| Approval/render smoke | **Pass:** approved plan and project record persisted; 2-second generated-media MP4 rendered. |
+| FFmpeg render smoke | **Pass:** 2-second MP4 rendered; FFmpeg exited successfully. |
+| Review-session HTTP smoke | **Pass:** opaque registration, authorized 100-byte range, session captions, selection, approval, render, and persisted state. |
+| Web model tests | **Pass:** 7 tests covering shared-schema parsing, timeline mapping, captions, and session helpers. |
+| Web production build | **Pass:** Vite client and server builds completed. |
+| Browser workflow | **Pass:** candidate comparison, pre-selection approval lock, selection, refresh restoration, captions, retry state, and rendered-state UI. |
+| Real output inspection | **Pass:** FFprobe confirmed the expected video, audio, subtitle, duration, resolution, and frame rate. |
+| MCP tool-list smoke | **Pass:** all seven tools are listed and the capability call succeeds. |
+
+## 9. What each component is responsible for
+
+### AI agent / Codex
+
+- understands the human request;
+- inspects or transcribes the source;
+- finds candidate moments and develops the editorial concept;
+- creates the declarative edit plan and captions;
+- invokes bridge tools and explains the proposed edit;
+- prepares verification and delivery artifacts.
+
+### OpenCut review workspace
+
+- presents the agent's plan in an editor-like visual context;
+- lets the human attach and review local source video;
+- exposes exact source ranges and timeline behavior;
+- provides the explicit approval boundary;
+- reports bridge and render state.
+
+### Agent bridge
+
+- validates the shared plan contract;
+- enforces the workspace and request safety boundaries;
+- inspects media and persists plans/project records;
+- compiles deterministic renderer arguments;
+- connects the approved UI action to local execution.
+
+### FFmpeg / FFprobe
+
+- performs the current deterministic media render;
+- verifies the actual output container and streams.
+
+### Human reviewer
+
+- supplies or authorizes the local source;
+- judges editorial quality and source selection;
+- approves or rejects the proposed plan;
+- retains control over any future distribution or publishing.
+
+## 10. Current limitations
+
+The MVP deliberately does not yet provide:
+
+- integration with OpenCut's future native Editor API or Rust media core;
+- native OpenCut timeline/project synchronization beyond the new JSON project record;
+- interactive timeline mutation or clip trimming in the review UI;
+- transitions, overlays, titles, keyframes, masks, or effects;
+- music mixing or advanced multi-track audio;
+- multi-track or non-sequential timeline composition;
+- formats other than MP4;
+- remote rendering, uploading, or social publishing;
+- multi-user or remote authentication beyond the loopback-only local boundary and per-process session tokens;
+- automatic resolution of transcription errors or semantic caption timing;
+- a GitHub pull request from the feature branch to the fork's `main` branch.
+
+## 11. Recommended next development steps
+
+1. **Add editable review controls.** Allow the human to adjust source in/out points, ordering, speed, and caption inclusion before approval.
+2. **Formalize the project adapter.** Map the current plan/project record into OpenCut's native Editor API when it lands.
+3. **Add preview versus final-render modes.** Keep fast bounded previews, then require a second explicit approval for a full-quality render.
+4. **Improve transcription and caption alignment.** Add word-level timestamps, speaker cleanup, and caption-safe line breaking.
+5. **Add provenance and revision history.** Record source hashes, plan revisions, agent/model metadata, reviewer notes, and approval events without storing secrets.
+6. **Expand the plan schema carefully.** Introduce titles, transitions, music, and richer layout alongside validation, review UI, and renderer tests.
+7. **Add publication as a separate gated workflow.** Keep export/publishing out of the renderer and require an independent destination-specific approval.
+8. **Open a pull request when ready.** Review the cumulative branch as one coherent local-first agent workflow before merging into the fork's `main` branch.
+
+## 12. Overall outcome
+
+We moved from “How could AI agents use OpenCut?” to a functioning local proof:
+
+> A human requests a clip, the agent analyzes real media and proposes a structured edit, OpenCut provides the review and approval surface, the bridge persists the decision, and a bounded renderer creates a verifiable MP4 without uploading or publishing the source.
+
+The most important architectural result is not the single sample clip. It is the reusable contract and approval boundary connecting agent reasoning to OpenCut-controlled execution.

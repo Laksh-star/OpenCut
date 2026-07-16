@@ -5,7 +5,8 @@
   "type": "module",
   "bin": {
     "opencut-agent": "./bin/opencut-agent",
-    "opencut-agent-http": "./bin/opencut-agent-http"
+    "opencut-agent-http": "./bin/opencut-agent-http",
+    "opencut-review": "./bin/opencut-review"
   },
   "scripts": {
     "dev": "bun run src/index.ts",
@@ -16,7 +17,8 @@
     "typecheck": "tsc --noEmit",
     "smoke": "bun run scripts/smoke.ts",
     "smoke:render": "bun run scripts/render-smoke.ts",
-    "smoke:approval": "bun run scripts/approval-smoke.ts"
+    "smoke:approval": "bun run scripts/approval-smoke.ts",
+    "smoke:review": "bun run scripts/review-session-smoke.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

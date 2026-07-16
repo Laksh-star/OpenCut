@@ -25,6 +25,16 @@ describe("workspace paths", () => {
     );
   });
 
+  test("creates missing nested output directories inside the root", async () => {
+    const { root } = await createFixture();
+    expect(await resolveOutputPath(root, "candidates/one/renders/output.mp4")).toBe(
+      join(root, "candidates", "one", "renders", "output.mp4")
+    );
+    expect(await realpath(join(root, "candidates", "one", "renders"))).toBe(
+      join(root, "candidates", "one", "renders")
+    );
+  });
+
   test("rejects parent traversal", async () => {
     const { root } = await createFixture();
     await expect(resolveOutputPath(root, "../preview.mp4")).rejects.toThrow(
