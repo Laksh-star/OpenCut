@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 
+import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import { z } from "zod/v4";
 
 import { approveAndRenderProject, capabilities } from "./service.ts";
+import { getWorkspaceRoot, resolveInputPath } from "./paths.ts";
 import { editPlanSchema } from "./schema.ts";
 
 const host = "127.0.0.1";
 const port = Number(process.env.OPENCUT_AGENT_HTTP_PORT ?? 3210);
 const maximumBodyBytes = 2_000_000;
+const maximumTextAssetBytes = 1_000_000;
 const allowedOrigins = new Set(
   (process.env.OPENCUT_WEB_ORIGINS ??
     "http://localhost:5173,http://127.0.0.1:5173")
@@ -66,6 +69,7 @@ const readJsonBody = async (request: IncomingMessage) => {
 
 const server = createServer(async (request, response) => {
   const origin = request.headers.origin;
+  const requestUrl = new URL(request.url ?? "/", `http://${host}:${port}`);
   if (origin && !allowedOrigins.has(origin)) {
     sendJson(request, response, 403, { error: "Origin is not allowed" });
     return;
@@ -78,7 +82,7 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  if (request.method === "GET" && request.url === "/health") {
+  if (request.method === "GET" && requestUrl.pathname === "/health") {
     sendJson(request, response, 200, {
       ok: true,
       server: capabilities.server,
@@ -88,9 +92,40 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "GET" && requestUrl.pathname === "/v1/assets/text") {
+    try {
+      const requestedPath = requestUrl.searchParams.get("path");
+      if (!requestedPath) {
+        sendJson(request, response, 400, { error: "A caption asset path is required" });
+        return;
+      }
+      if (!/\.(srt|vtt)$/i.test(requestedPath)) {
+        sendJson(request, response, 400, {
+          error: "Only SRT and VTT caption assets can be read",
+        });
+        return;
+      }
+
+      const root = await getWorkspaceRoot();
+      const path = await resolveInputPath(root, requestedPath);
+      const contents = await readFile(path, "utf8");
+      if (Buffer.byteLength(contents, "utf8") > maximumTextAssetBytes) {
+        sendJson(request, response, 413, { error: "Caption asset exceeds the 1 MB limit" });
+        return;
+      }
+      sendJson(request, response, 200, { path: requestedPath, contents });
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).slice(
+        -8_000
+      );
+      sendJson(request, response, 400, { error: message });
+    }
+    return;
+  }
+
   if (
     request.method === "POST" &&
-    request.url === "/v1/projects/approve-and-render"
+    requestUrl.pathname === "/v1/projects/approve-and-render"
   ) {
     if (approvalInProgress) {
       sendJson(request, response, 409, {

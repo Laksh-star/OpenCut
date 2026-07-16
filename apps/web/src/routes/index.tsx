@@ -14,6 +14,8 @@ import {
   Pause,
   Play,
   RotateCcw,
+  SkipBack,
+  SkipForward,
   Sparkles,
   Upload,
   Volume2,
@@ -22,6 +24,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { Button } from "#/components/ui/button.tsx"
+import { parseCaptionFile, type CaptionCue } from "#/lib/captions.ts"
 import {
   buildTimelineSegments,
   formatTimecode,
@@ -61,6 +64,13 @@ function AgentReviewWorkspace() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [videoName, setVideoName] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [currentSourceTime, setCurrentSourceTime] = useState(
+    sampleEditPlan.timeline.clips[0]?.sourceStart ?? 0,
+  )
+  const [captionCues, setCaptionCues] = useState<CaptionCue[]>([])
+  const [captionsEnabled, setCaptionsEnabled] = useState(false)
+  const [captionsLoading, setCaptionsLoading] = useState(false)
+  const [captionsError, setCaptionsError] = useState<string | null>(null)
   const planInputRef = useRef<HTMLInputElement>(null)
   const videoInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -75,6 +85,25 @@ function AgentReviewWorkspace() {
   const captionsAsset = plan.assets.find(
     (asset) => asset.id === plan.timeline.captionsAssetId,
   )
+  const captionsPath = captionsAsset?.path ?? null
+  const selectionProgressSeconds = selectedSegment
+    ? Math.min(
+        selectedSegment.durationSeconds,
+        Math.max(
+          0,
+          (currentSourceTime - selectedSegment.clip.sourceStart) /
+            selectedSegment.clip.speed,
+        ),
+      )
+    : 0
+  const currentTimelineTime = selectedSegment
+    ? selectedSegment.timelineStart + selectionProgressSeconds
+    : 0
+  const activeCaption = captionsEnabled
+    ? captionCues.find(
+        (cue) => currentTimelineTime >= cue.start && currentTimelineTime <= cue.end,
+      )
+    : undefined
 
   useEffect(() => {
     return () => {
@@ -95,6 +124,62 @@ function AgentReviewWorkspace() {
     }
   }, [])
 
+  useEffect(() => {
+    const encodedPlan = new URLSearchParams(window.location.search).get("plan")
+    if (!encodedPlan) return
+
+    try {
+      const importedPlan = parseEditPlan(JSON.parse(encodedPlan))
+      setPlan(importedPlan)
+      setSelectedClipId(importedPlan.timeline.clips[0]?.id ?? "")
+      setCurrentSourceTime(importedPlan.timeline.clips[0]?.sourceStart ?? 0)
+      setReviewState("review")
+      setApprovalResult(null)
+      setApprovalError(null)
+      setPlanError(null)
+    } catch (error) {
+      setPlanError(
+        error instanceof Error ? error.message : "Could not read the review plan from the URL",
+      )
+    }
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setCaptionCues([])
+    setCaptionsEnabled(false)
+    setCaptionsError(null)
+    if (!captionsPath) {
+      setCaptionsLoading(false)
+      return () => controller.abort()
+    }
+
+    setCaptionsLoading(true)
+    void fetch(
+      `${bridgeUrl}/v1/assets/text?path=${encodeURIComponent(captionsPath)}`,
+      { signal: controller.signal },
+    )
+      .then(async (response) => {
+        const payload = (await response.json()) as { contents?: string; error?: string }
+        if (!response.ok || payload.contents === undefined) {
+          throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+        }
+        const cues = parseCaptionFile(payload.contents)
+        if (cues.length === 0) throw new Error("No caption cues were found")
+        setCaptionCues(cues)
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return
+        setCaptionsError(
+          error instanceof Error ? error.message : "Could not load the caption track",
+        )
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setCaptionsLoading(false)
+      })
+    return () => controller.abort()
+  }, [captionsPath])
+
   async function handlePlanFile(file: File | undefined) {
     if (!file) return
 
@@ -102,6 +187,7 @@ function AgentReviewWorkspace() {
       const importedPlan = parseEditPlan(JSON.parse(await file.text()))
       setPlan(importedPlan)
       setSelectedClipId(importedPlan.timeline.clips[0]?.id ?? "")
+      setCurrentSourceTime(importedPlan.timeline.clips[0]?.sourceStart ?? 0)
       setReviewState("review")
       setApprovalResult(null)
       setApprovalError(null)
@@ -116,11 +202,13 @@ function AgentReviewWorkspace() {
     if (videoUrl) URL.revokeObjectURL(videoUrl)
     setVideoUrl(URL.createObjectURL(file))
     setVideoName(file.name)
+    setCurrentSourceTime(selectedSegment?.clip.sourceStart ?? 0)
     setIsPlaying(false)
   }
 
   function selectSegment(segment: TimelineSegment) {
     setSelectedClipId(segment.clip.id)
+    setCurrentSourceTime(segment.clip.sourceStart)
     if (videoRef.current) {
       videoRef.current.currentTime = segment.clip.sourceStart
       videoRef.current.pause()
@@ -143,19 +231,45 @@ function AgentReviewWorkspace() {
       video.currentTime >= selectedSegment.clip.sourceEnd
     ) {
       video.currentTime = selectedSegment.clip.sourceStart
+      setCurrentSourceTime(selectedSegment.clip.sourceStart)
     }
     await video.play()
     setIsPlaying(true)
   }
 
-  function enforceSelectionEnd() {
+  function handleSelectionTimeUpdate() {
     const video = videoRef.current
     if (!video || !selectedSegment) return
+    setCurrentSourceTime(video.currentTime)
     if (video.currentTime >= selectedSegment.clip.sourceEnd) {
       video.pause()
       video.currentTime = selectedSegment.clip.sourceStart
+      setCurrentSourceTime(selectedSegment.clip.sourceStart)
       setIsPlaying(false)
     }
+  }
+
+  function seekToSelectionTime(timelineSeconds: number) {
+    const video = videoRef.current
+    if (!video || !selectedSegment) return
+    const safeTimelineSeconds = Math.min(
+      selectedSegment.durationSeconds,
+      Math.max(0, timelineSeconds),
+    )
+    const requestedSourceTime =
+      selectedSegment.clip.sourceStart +
+      safeTimelineSeconds * selectedSegment.clip.speed
+    const maximumSourceTime = Math.max(
+      selectedSegment.clip.sourceStart,
+      selectedSegment.clip.sourceEnd - 0.01,
+    )
+    const nextSourceTime = Math.min(maximumSourceTime, requestedSourceTime)
+    video.currentTime = nextSourceTime
+    setCurrentSourceTime(nextSourceTime)
+  }
+
+  function seekBy(timelineSeconds: number) {
+    seekToSelectionTime(selectionProgressSeconds + timelineSeconds)
   }
 
   async function approveAndRender() {
@@ -378,7 +492,10 @@ function AgentReviewWorkspace() {
                   ref={videoRef}
                   className="size-full object-contain"
                   src={videoUrl}
-                  onTimeUpdate={enforceSelectionEnd}
+                  onLoadedMetadata={() =>
+                    seekToSelectionTime(selectionProgressSeconds)
+                  }
+                  onTimeUpdate={handleSelectionTimeUpdate}
                   onPause={() => setIsPlaying(false)}
                   onPlay={() => setIsPlaying(true)}
                 />
@@ -399,6 +516,14 @@ function AgentReviewWorkspace() {
                 </div>
               )}
 
+              {videoUrl && activeCaption ? (
+                <div className="pointer-events-none absolute inset-x-4 bottom-16 flex justify-center">
+                  <p className="max-w-[85%] whitespace-pre-line rounded-lg bg-black/80 px-4 py-2 text-center text-base font-semibold leading-snug text-white shadow-lg md:text-xl">
+                    {activeCaption.text}
+                  </p>
+                </div>
+              ) : null}
+
               {videoUrl && selectedSegment ? (
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent px-4 pb-4 pt-12">
                   <p className="text-xs font-medium">{humanizeId(selectedSegment.clip.id)}</p>
@@ -410,7 +535,15 @@ function AgentReviewWorkspace() {
             </div>
           </div>
 
-          <div className="flex h-12 items-center justify-center gap-4 border-t border-white/10 bg-[#0e0f11]">
+          <div className="flex h-16 items-center justify-center gap-3 border-t border-white/10 bg-[#0e0f11] px-4">
+            <button
+              className="grid size-7 place-items-center rounded-full border border-white/10 text-zinc-300 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-30"
+              disabled={!videoUrl}
+              onClick={() => seekBy(-5)}
+              aria-label="Seek backward 5 seconds"
+            >
+              <SkipBack className="size-3.5" />
+            </button>
             <button
               className="grid size-7 place-items-center rounded-full bg-zinc-100 text-zinc-950 disabled:cursor-not-allowed disabled:opacity-30"
               disabled={!videoUrl}
@@ -419,8 +552,27 @@ function AgentReviewWorkspace() {
             >
               {isPlaying ? <Pause className="size-3.5 fill-current" /> : <Play className="ml-0.5 size-3.5 fill-current" />}
             </button>
-            <span className="min-w-28 font-mono text-[11px] text-zinc-400">
-              {selectedSegment ? formatTimecode(selectedSegment.timelineStart) : "0:00.0"}
+            <button
+              className="grid size-7 place-items-center rounded-full border border-white/10 text-zinc-300 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-30"
+              disabled={!videoUrl}
+              onClick={() => seekBy(5)}
+              aria-label="Seek forward 5 seconds"
+            >
+              <SkipForward className="size-3.5" />
+            </button>
+            <input
+              className="h-1.5 min-w-32 flex-1 cursor-pointer accent-amber-300 disabled:cursor-not-allowed disabled:opacity-30 md:max-w-md"
+              type="range"
+              min={0}
+              max={selectedSegment?.durationSeconds ?? 0}
+              step={0.1}
+              value={selectionProgressSeconds}
+              disabled={!videoUrl || !selectedSegment}
+              onChange={(event) => seekToSelectionTime(Number(event.target.value))}
+              aria-label="Selection position"
+            />
+            <span className="min-w-28 text-right font-mono text-[11px] text-zinc-400">
+              {formatTimecode(currentTimelineTime)}
               <span className="text-zinc-700"> / </span>
               {formatTimecode(totalDuration)}
             </span>
@@ -514,6 +666,7 @@ function AgentReviewWorkspace() {
               onClick={() => {
                 setPlan(sampleEditPlan)
                 setSelectedClipId(sampleEditPlan.timeline.clips[0]?.id ?? "")
+                setCurrentSourceTime(sampleEditPlan.timeline.clips[0]?.sourceStart ?? 0)
                 setReviewState("review")
                 setApprovalResult(null)
                 setApprovalError(null)
@@ -558,10 +711,31 @@ function AgentReviewWorkspace() {
                   </button>
                 ))}
               </div>
-              <div className="mt-1 flex h-7 items-center rounded border border-violet-300/15 bg-violet-400/15 px-3 text-[9px] text-violet-200/75">
+              <button
+                className={`mt-1 flex h-7 w-full items-center rounded border px-3 text-left text-[9px] transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                  captionsEnabled
+                    ? "border-violet-200/50 bg-violet-400/35 text-violet-100"
+                    : "border-violet-300/15 bg-violet-400/15 text-violet-200/75 hover:bg-violet-400/25"
+                }`}
+                disabled={!captionsAsset || captionsLoading || Boolean(captionsError) || captionCues.length === 0}
+                onClick={() => setCaptionsEnabled((enabled) => !enabled)}
+                aria-label={captionsEnabled ? "Hide caption preview" : "Show caption preview"}
+                aria-pressed={captionsEnabled}
+              >
                 <Captions className="mr-2 size-3" />
-                {captionsAsset ? captionsAsset.path.split("/").at(-1) : "No captions attached"}
-              </div>
+                <span className="truncate">
+                  {captionsAsset ? captionsAsset.path.split("/").at(-1) : "No captions attached"}
+                </span>
+                <span className="ml-auto pl-3 font-semibold uppercase tracking-wider">
+                  {captionsLoading
+                    ? "Loading"
+                    : captionsError
+                      ? "Unavailable"
+                      : captionsEnabled
+                        ? "Preview on"
+                        : `${captionCues.length} cues · Preview off`}
+                </span>
+              </button>
               <div className="pointer-events-none absolute bottom-0 left-2 top-5 w-px bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.8)]" />
             </div>
           </div>
