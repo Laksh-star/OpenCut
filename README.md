@@ -79,14 +79,15 @@ In the review workspace you can:
 2. Select a candidate without authorizing a render.
 3. Stream even multi-gigabyte local source media with byte-range requests.
 4. Select timeline clips to seek to their exact source in/out points.
-5. Review speed, volume, captions, output duration, and project settings.
-6. Approve the selected plan to persist an OpenCut project record and render its MP4
-   through the local bridge.
-7. Reload the page without losing selected or already-rendered state.
+5. Adjust in/out points, ordering, speed, volume, and caption inclusion.
+6. Save changes as immutable numbered revisions with reviewer notes and audit events.
+7. Render and stream a fast preview tied to the current revision.
+8. Approve that revision separately to persist hashes and render the higher-quality MP4.
+9. Reload without losing selection, revisions, preview state, notes, audit history, or final state.
 
 This is intentionally a review boundary, not a claim that the rewrite already
-has a complete editor. Timeline mutation and richer project persistence will
-move behind the native Editor API as that API lands.
+has a complete editor. The current revision adapter remains FFmpeg-backed and
+will move behind the native Editor API when that API lands.
 
 ## Contributing
 

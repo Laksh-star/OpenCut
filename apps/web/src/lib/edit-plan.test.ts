@@ -6,6 +6,9 @@ import {
   getTimelineDuration,
   parseEditPlan,
   sampleEditPlan,
+  movePlanClip,
+  setPlanCaptionsEnabled,
+  updatePlanClip,
 } from "./edit-plan.ts"
 
 describe("edit plan review model", () => {
@@ -39,5 +42,17 @@ describe("edit plan review model", () => {
   test("formats editor timecodes", () => {
     expect(formatTimecode(65.8)).toBe("1:05.8")
   })
-})
 
+  test("revises ranges, speed, ordering, and caption inclusion", () => {
+    const revised = updatePlanClip(sampleEditPlan, "fire-analogy", {
+      sourceStart: 596,
+      sourceEnd: 624,
+      speed: 1.25,
+      volume: 0.8,
+    })
+    expect(revised.timeline.clips[0]).toMatchObject({ sourceStart: 596, sourceEnd: 624, speed: 1.25, volume: 0.8 })
+    expect(movePlanClip(revised, "fire-analogy", 1).timeline.clips[0]?.id).toBe("human-potential")
+    expect(setPlanCaptionsEnabled(revised, false).timeline.captionsAssetId).toBeUndefined()
+    expect(setPlanCaptionsEnabled(setPlanCaptionsEnabled(revised, false), true).timeline.captionsAssetId).toBe("captions")
+  })
+})

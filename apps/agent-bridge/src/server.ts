@@ -3,6 +3,7 @@ import { z } from "zod/v4";
 
 import {
   approveAndRenderProject,
+  buildWordTimedCaptions,
   capabilities,
   compilePlanFile,
   inspectWorkspaceMedia,
@@ -11,6 +12,7 @@ import {
   validatePlan,
 } from "./service.ts";
 import { editPlanSchema } from "./schema.ts";
+import { timedTranscriptSchema } from "./captions.ts";
 
 const jsonResult = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -101,6 +103,27 @@ export const buildServer = () => {
     },
     async ({ planPath, outputPath, durationSeconds }) =>
       jsonResult(await renderPlanPreview(planPath, outputPath, durationSeconds))
+  );
+
+  server.registerTool(
+    "opencut_build_word_timed_captions",
+    {
+      description:
+        "Convert provider-independent word timestamps into caption-safe SRT cues inside OPENCUT_AGENT_ROOT.",
+      inputSchema: z.object({
+        transcript: timedTranscriptSchema,
+        outputPath: z.string().min(1),
+        maximumCharactersPerLine: z.number().int().min(20).max(80).default(42),
+        maximumLines: z.number().int().min(1).max(3).default(2),
+        maximumCueSeconds: z.number().min(1).max(10).default(6),
+        includeSpeakerLabels: z.boolean().default(false),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async ({ transcript, outputPath, maximumCharactersPerLine, maximumLines, maximumCueSeconds, includeSpeakerLabels }) =>
+      jsonResult(await buildWordTimedCaptions(transcript, outputPath, {
+        maximumCharactersPerLine, maximumLines, maximumCueSeconds, includeSpeakerLabels,
+      }))
   );
 
   server.registerTool(

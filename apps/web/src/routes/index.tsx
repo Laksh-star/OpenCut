@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router"
 import {
+  ArrowDown,
+  ArrowUp,
   Captions,
   Check,
   ChevronDown,
@@ -9,16 +11,18 @@ import {
   Film,
   FolderOpen,
   Gauge,
+  Eye,
   LoaderCircle,
   Maximize2,
   Pause,
   Play,
   RotateCcw,
+  Save,
   SkipBack,
   SkipForward,
   Sparkles,
+  MessageSquareText,
   Upload,
-  Volume2,
   WandSparkles,
 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -29,12 +33,16 @@ import {
   buildTimelineSegments,
   formatTimecode,
   getTimelineDuration,
+  movePlanClip,
   parseEditPlan,
   sampleEditPlan,
+  setPlanCaptionsEnabled,
+  updatePlanClip,
   type EditPlan,
   type TimelineSegment,
 } from "#/lib/edit-plan.ts"
 import {
+  candidateHasCurrentPreview,
   candidateForSelection,
   mediaAssetForPlan,
   type ReviewCandidate,
@@ -43,7 +51,7 @@ import {
 
 export const Route = createFileRoute("/")({ component: AgentReviewWorkspace })
 
-type ReviewState = "review" | "rendering" | "rendered" | "failed"
+type ReviewState = "review" | "saving" | "previewing" | "preview-ready" | "rendering" | "rendered" | "failed"
 
 type ApprovalResult = {
   projectRecordPath: string
@@ -80,6 +88,8 @@ function AgentReviewWorkspace() {
   const [reviewSession, setReviewSession] = useState<ReviewSession | null>(null)
   const [activeReviewCandidateId, setActiveReviewCandidateId] = useState<string | null>(null)
   const [sessionError, setSessionError] = useState<string | null>(null)
+  const [revisionNote, setRevisionNote] = useState("")
+  const [reviewerNote, setReviewerNote] = useState("")
   const planInputRef = useRef<HTMLInputElement>(null)
   const videoInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -113,6 +123,17 @@ function AgentReviewWorkspace() {
         (cue) => currentTimelineTime >= cue.start && currentTimelineTime <= cue.end,
       )
     : undefined
+  const activeCandidate = reviewSession?.candidates.find(
+    (candidate) => candidate.id === activeReviewCandidateId,
+  )
+  const planIsDirty = Boolean(activeCandidate && JSON.stringify(activeCandidate.plan) !== JSON.stringify(plan))
+  const hasCurrentPreview = candidateHasCurrentPreview(activeCandidate)
+  const sessionId = typeof window === "undefined"
+    ? null
+    : new URLSearchParams(window.location.search).get("session")
+  const previewUrl = reviewSession && sessionId && activeCandidate && hasCurrentPreview
+    ? `${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/candidates/${encodeURIComponent(activeCandidate.id)}/preview`
+    : null
 
   useEffect(() => {
     return () => {
@@ -176,10 +197,23 @@ function AgentReviewWorkspace() {
     setPlan(candidate.plan)
     setSelectedClipId(candidate.plan.timeline.clips[0]?.id ?? "")
     setCurrentSourceTime(candidate.plan.timeline.clips[0]?.sourceStart ?? 0)
-    setReviewState(candidate.status === "rendered" || candidate.outputExists ? "rendered" : candidate.status === "failed" ? "failed" : candidate.status === "rendering" ? "rendering" : "review")
+    setReviewState(
+      candidate.status === "rendered" || candidate.outputExists
+        ? "rendered"
+        : candidate.status === "failed"
+          ? "failed"
+          : candidate.status === "rendering"
+            ? "rendering"
+            : candidate.status === "previewing"
+              ? "previewing"
+              : candidateHasCurrentPreview(candidate)
+                ? "preview-ready"
+                : "review",
+    )
     setApprovalResult(null)
     setApprovalError(candidate.error ?? null)
     setPlanError(null)
+    setRevisionNote("")
     const asset = mediaAssetForPlan(session, candidate.plan)
     const sessionId = new URLSearchParams(window.location.search).get("session")
     if (asset && sessionId) {
@@ -205,6 +239,82 @@ function AgentReviewWorkspace() {
       if (candidate) applyReviewCandidate(payload, candidate)
     } catch (error) {
       setSessionError(error instanceof Error ? error.message : "Could not select candidate")
+    }
+  }
+
+  function reviseSelectedClip(patch: Partial<EditPlan["timeline"]["clips"][number]>) {
+    if (!selectedSegment || reviewState === "rendered" || reviewState === "rendering") return
+    try {
+      setPlan(updatePlanClip(plan, selectedSegment.clip.id, patch))
+      setPlanError(null)
+    } catch (error) {
+      setPlanError(error instanceof Error ? error.message : "Invalid clip revision")
+    }
+  }
+
+  async function saveRevision() {
+    if (!reviewSession || !activeCandidate || !planIsDirty) return
+    setReviewState("saving")
+    setSessionError(null)
+    try {
+      const response = await fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId ?? "")}/revise`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidateId: activeCandidate.id, plan, note: revisionNote || undefined }),
+      })
+      const payload = (await response.json()) as ReviewSession & { error?: string }
+      if (!response.ok) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+      setReviewSession(payload)
+      const candidate = candidateForSelection(payload)
+      if (candidate) applyReviewCandidate(payload, candidate)
+    } catch (error) {
+      setReviewState("failed")
+      setSessionError(error instanceof Error ? error.message : "Could not save this revision")
+    }
+  }
+
+  async function renderPreview() {
+    if (!reviewSession || !activeCandidate || planIsDirty || reviewState === "previewing") return
+    setReviewState("previewing")
+    setApprovalError(null)
+    try {
+      const response = await fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId ?? "")}/render-preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          candidateId: activeCandidate.id,
+          approvalToken: reviewSession.approvalToken,
+          renderLimitSeconds: 60,
+        }),
+      })
+      const payload = (await response.json()) as ApprovalResult & { error?: string; session?: ReviewSession }
+      if (!response.ok || !payload.session) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+      setReviewSession(payload.session)
+      const candidate = candidateForSelection(payload.session)
+      if (candidate) applyReviewCandidate(payload.session, candidate)
+      setReviewState("preview-ready")
+      setApprovalResult(payload)
+    } catch (error) {
+      setReviewState("failed")
+      setApprovalError(error instanceof Error ? error.message : "Could not render the preview")
+    }
+  }
+
+  async function addReviewerNote() {
+    if (!reviewSession || !activeCandidate || !reviewerNote.trim()) return
+    setSessionError(null)
+    try {
+      const response = await fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId ?? "")}/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidateId: activeCandidate.id, text: reviewerNote.trim() }),
+      })
+      const payload = (await response.json()) as ReviewSession & { error?: string }
+      if (!response.ok) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+      setReviewSession(payload)
+      setReviewerNote("")
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : "Could not save reviewer note")
     }
   }
 
@@ -351,6 +461,10 @@ function AgentReviewWorkspace() {
       const sessionId = new URLSearchParams(window.location.search).get("session")
       const selectedCandidate = reviewSession ? candidateForSelection(reviewSession) : null
       if (reviewSession && !selectedCandidate) throw new Error("Select a candidate before approval")
+      if (reviewSession && planIsDirty) throw new Error("Save the current revision before final approval")
+      if (reviewSession && !candidateHasCurrentPreview(selectedCandidate ?? undefined)) {
+        throw new Error("Render and review a preview of this revision before final approval")
+      }
       const response = await fetch(reviewSession
         ? `${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId ?? "")}/approve-and-render`
         : `${bridgeUrl}/v1/projects/approve-and-render`, {
@@ -472,6 +586,25 @@ function AgentReviewWorkspace() {
               Import plan
             </Button>
           ) : null}
+          {reviewSession ? (
+            <Button
+              variant="outline"
+              size="lg"
+              disabled={
+                !reviewSession.selectedCandidateId ||
+                planIsDirty ||
+                reviewState === "saving" ||
+                reviewState === "previewing" ||
+                reviewState === "rendering" ||
+                reviewState === "rendered"
+              }
+              onClick={() => void renderPreview()}
+              title={planIsDirty ? "Save the revision before rendering its preview" : "Render a fast local preview"}
+            >
+              {reviewState === "previewing" ? <LoaderCircle className="animate-spin" /> : <Eye />}
+              {reviewState === "previewing" ? "Previewing…" : hasCurrentPreview ? "Refresh preview" : "Render preview"}
+            </Button>
+          ) : null}
           <Button
             size="lg"
             className={reviewState === "rendered"
@@ -479,7 +612,13 @@ function AgentReviewWorkspace() {
               : reviewState === "failed"
                 ? "bg-red-300 text-red-950 hover:bg-red-200"
                 : "bg-amber-300 text-zinc-950 hover:bg-amber-200"}
-            disabled={reviewState === "rendering" || reviewState === "rendered" || Boolean(reviewSession && !reviewSession.selectedCandidateId)}
+            disabled={
+              reviewState === "saving" ||
+              reviewState === "previewing" ||
+              reviewState === "rendering" ||
+              reviewState === "rendered" ||
+              Boolean(reviewSession && (!reviewSession.selectedCandidateId || planIsDirty || !hasCurrentPreview))
+            }
             onClick={() => void approveAndRender()}
           >
             {reviewState === "rendering" ? (
@@ -497,7 +636,7 @@ function AgentReviewWorkspace() {
                 ? "Rendered"
                 : reviewState === "failed"
                   ? "Retry render"
-                  : "Approve & render"}
+                  : "Approve final"}
           </Button>
         </div>
       </header>
@@ -515,6 +654,7 @@ function AgentReviewWorkspace() {
             {reviewSession.candidates.map((candidate) => {
               const selected = candidate.id === reviewSession.selectedCandidateId
               const rendered = candidate.status === "rendered" || candidate.outputExists
+              const previewReady = candidateHasCurrentPreview(candidate)
               return (
                 <button
                   key={candidate.id}
@@ -524,16 +664,48 @@ function AgentReviewWorkspace() {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="truncate text-xs font-medium text-zinc-100">{candidate.title}</span>
-                    <span className={`rounded-full px-2 py-0.5 text-[9px] ${rendered ? "bg-emerald-400/15 text-emerald-300" : selected ? "bg-amber-300/15 text-amber-200" : "bg-white/5 text-zinc-500"}`}>
-                      {rendered ? "Rendered" : selected ? "Selected" : "Ready"}
+                    <span className={`rounded-full px-2 py-0.5 text-[9px] ${rendered ? "bg-emerald-400/15 text-emerald-300" : previewReady ? "bg-sky-400/15 text-sky-300" : selected ? "bg-amber-300/15 text-amber-200" : "bg-white/5 text-zinc-500"}`}>
+                      {rendered ? "Final" : previewReady ? "Preview ready" : selected ? "Selected" : "Ready"}
                     </span>
                   </div>
                   <p className="mt-1.5 line-clamp-2 text-[10px] leading-relaxed text-zinc-500">{candidate.summary || "Agent-proposed edit"}</p>
-                  <p className="mt-2 font-mono text-[9px] text-zinc-600">{formatTimecode(getTimelineDuration(candidate.plan))} · {candidate.plan.timeline.clips.length} clips</p>
+                  <p className="mt-2 font-mono text-[9px] text-zinc-600">r{candidate.revision} · {formatTimecode(getTimelineDuration(candidate.plan))} · {candidate.plan.timeline.clips.length} clips</p>
                 </button>
               )
             })}
           </div>
+          {activeCandidate ? (
+            <div className="mt-3 grid gap-2 rounded-lg border border-white/10 bg-black/20 p-3 md:grid-cols-[minmax(0,1fr)_auto]">
+              <div>
+                <label className="text-[9px] font-semibold uppercase tracking-[0.14em] text-zinc-600" htmlFor="revision-note">
+                  Revision note
+                </label>
+                <input
+                  id="revision-note"
+                  className="mt-1 h-8 w-full rounded-md border border-white/10 bg-black/30 px-2 text-xs text-zinc-200 outline-none focus:border-amber-300/50"
+                  value={revisionNote}
+                  onChange={(event) => setRevisionNote(event.target.value)}
+                  placeholder="What changed in this revision?"
+                  maxLength={1_000}
+                />
+              </div>
+              <Button
+                className="self-end bg-zinc-100 text-zinc-950 hover:bg-white"
+                disabled={!planIsDirty || reviewState === "saving" || reviewState === "rendering" || reviewState === "rendered"}
+                onClick={() => void saveRevision()}
+              >
+                {reviewState === "saving" ? <LoaderCircle className="animate-spin" /> : <Save />}
+                {reviewState === "saving" ? "Saving…" : `Save as r${activeCandidate.revision + 1}`}
+              </Button>
+              <p className="text-[10px] text-zinc-500 md:col-span-2">
+                {planIsDirty
+                  ? "Unsaved edits invalidate the previous preview. Save before rendering again."
+                  : hasCurrentPreview
+                    ? `Revision ${activeCandidate.revision} has a verified preview and can be approved for final render.`
+                    : `Revision ${activeCandidate.revision} is saved. Render its preview before final approval.`}
+              </p>
+            </div>
+          ) : null}
           {sessionError ? <p className="mt-2 text-xs text-red-300">{sessionError}</p> : null}
         </section>
       ) : sessionError ? (
@@ -702,18 +874,82 @@ function AgentReviewWorkspace() {
               <InspectorSection title="Selection">
                 <InspectorValue label="Clip" value={humanizeId(selectedSegment.clip.id)} />
                 <InspectorValue label="Asset" value={selectedAsset?.id ?? selectedSegment.clip.assetId} />
+                {reviewSession ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={plan.timeline.clips[0]?.id === selectedSegment.clip.id || reviewState === "rendered"}
+                      onClick={() => setPlan(movePlanClip(plan, selectedSegment.clip.id, -1))}
+                    >
+                      <ArrowUp /> Earlier
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={plan.timeline.clips.at(-1)?.id === selectedSegment.clip.id || reviewState === "rendered"}
+                      onClick={() => setPlan(movePlanClip(plan, selectedSegment.clip.id, 1))}
+                    >
+                      <ArrowDown /> Later
+                    </Button>
+                  </div>
+                ) : null}
               </InspectorSection>
               <InspectorSection title="Source range">
                 <div className="grid grid-cols-2 gap-2">
-                  <TimeBox label="In" value={formatTimecode(selectedSegment.clip.sourceStart)} />
-                  <TimeBox label="Out" value={formatTimecode(selectedSegment.clip.sourceEnd)} />
+                  <NumberEditor
+                    label="In (seconds)"
+                    value={selectedSegment.clip.sourceStart}
+                    min={0}
+                    max={selectedSegment.clip.sourceEnd - 0.01}
+                    step={0.1}
+                    disabled={!reviewSession || reviewState === "rendered"}
+                    onChange={(value) => reviseSelectedClip({ sourceStart: value })}
+                  />
+                  <NumberEditor
+                    label="Out (seconds)"
+                    value={selectedSegment.clip.sourceEnd}
+                    min={selectedSegment.clip.sourceStart + 0.01}
+                    step={0.1}
+                    disabled={!reviewSession || reviewState === "rendered"}
+                    onChange={(value) => reviseSelectedClip({ sourceEnd: value })}
+                  />
                 </div>
                 <InspectorValue label="Source length" value={`${(selectedSegment.clip.sourceEnd - selectedSegment.clip.sourceStart).toFixed(1)}s`} />
               </InspectorSection>
               <InspectorSection title="Playback">
-                <InspectorValue icon={<Gauge />} label="Speed" value={`${selectedSegment.clip.speed.toFixed(2)}×`} />
-                <InspectorValue icon={<Volume2 />} label="Volume" value={`${Math.round(selectedSegment.clip.volume * 100)}%`} />
+                <NumberEditor
+                  label="Speed"
+                  value={selectedSegment.clip.speed}
+                  min={0.25}
+                  max={4}
+                  step={0.05}
+                  suffix="×"
+                  disabled={!reviewSession || reviewState === "rendered"}
+                  onChange={(value) => reviseSelectedClip({ speed: value })}
+                />
+                <NumberEditor
+                  label="Volume"
+                  value={selectedSegment.clip.volume}
+                  min={0}
+                  max={2}
+                  step={0.05}
+                  suffix="×"
+                  disabled={!reviewSession || reviewState === "rendered"}
+                  onChange={(value) => reviseSelectedClip({ volume: value })}
+                />
                 <InspectorValue icon={<Clock3 />} label="Timeline length" value={`${selectedSegment.durationSeconds.toFixed(1)}s`} />
+                {reviewSession ? (
+                  <button
+                    className={`flex w-full items-center justify-between rounded-md border px-2.5 py-2 text-[10px] transition ${plan.timeline.captionsAssetId ? "border-violet-300/30 bg-violet-400/10 text-violet-200" : "border-white/10 text-zinc-500"}`}
+                    onClick={() => setPlan(setPlanCaptionsEnabled(plan, !plan.timeline.captionsAssetId))}
+                    disabled={!plan.assets.some((asset) => asset.kind === "captions") || reviewState === "rendered"}
+                    aria-pressed={Boolean(plan.timeline.captionsAssetId)}
+                  >
+                    <span className="flex items-center gap-1.5"><Captions className="size-3" /> Include captions</span>
+                    <span>{plan.timeline.captionsAssetId ? "On" : "Off"}</span>
+                  </button>
+                ) : null}
               </InspectorSection>
               <InspectorSection title="Review state">
                 <div className={`rounded-lg border p-3 ${
@@ -730,7 +966,7 @@ function AgentReviewWorkspace() {
                         ? "text-red-300"
                         : "text-amber-200"
                   }`}>
-                    {reviewState === "rendering" ? (
+                    {reviewState === "rendering" || reviewState === "previewing" || reviewState === "saving" ? (
                       <LoaderCircle className="size-3.5 animate-spin" />
                     ) : reviewState === "rendered" ? (
                       <Check className="size-3.5" />
@@ -739,7 +975,13 @@ function AgentReviewWorkspace() {
                     ) : (
                       <Sparkles className="size-3.5" />
                     )}
-                    {reviewState === "rendering"
+                    {reviewState === "saving"
+                      ? "Saving revision"
+                      : reviewState === "previewing"
+                        ? "Rendering preview"
+                        : reviewState === "preview-ready"
+                          ? "Preview ready"
+                          : reviewState === "rendering"
                       ? "Rendering locally"
                       : reviewState === "rendered"
                         ? "Project rendered"
@@ -748,7 +990,13 @@ function AgentReviewWorkspace() {
                           : "Awaiting approval"}
                   </p>
                   <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
-                    {reviewState === "rendering"
+                    {reviewState === "saving"
+                      ? "The revised plan is being validated, snapshotted, and saved."
+                      : reviewState === "previewing"
+                        ? "A fast local preview is being rendered for this exact revision."
+                        : reviewState === "preview-ready"
+                          ? "Review the rendered preview, then use Approve final for the high-quality output."
+                          : reviewState === "rendering"
                       ? "The local bridge saved the approved plan and is rendering its MP4 output."
                       : reviewState === "rendered"
                         ? `Saved ${approvalResult?.outputPath ?? plan.output.path}`
@@ -756,6 +1004,16 @@ function AgentReviewWorkspace() {
                           ? approvalError ?? "Start the local bridge and retry the render."
                           : "Review both clips, captions, and output settings before handing the plan to the renderer."}
                   </p>
+                  {previewUrl && reviewState !== "rendered" ? (
+                    <a
+                      className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-medium text-sky-300 hover:text-sky-200"
+                      href={previewUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <Play className="size-3" /> Open rendered preview
+                    </a>
+                  ) : null}
                   {reviewState === "rendered" && approvalResult ? (
                     <p className="mt-2 border-t border-emerald-300/10 pt-2 font-mono text-[9px] text-emerald-200/65">
                       Project: {approvalResult.projectRecordPath}
@@ -763,6 +1021,35 @@ function AgentReviewWorkspace() {
                   ) : null}
                 </div>
               </InspectorSection>
+              {reviewSession && activeCandidate ? (
+                <InspectorSection title="Reviewer notes & audit">
+                  <textarea
+                    className="min-h-16 w-full resize-y rounded-md border border-white/10 bg-black/30 p-2 text-[10px] text-zinc-200 outline-none focus:border-amber-300/50"
+                    value={reviewerNote}
+                    onChange={(event) => setReviewerNote(event.target.value)}
+                    placeholder="Add a decision note for this revision"
+                    maxLength={2_000}
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    disabled={!reviewerNote.trim()}
+                    onClick={() => void addReviewerNote()}
+                  >
+                    <MessageSquareText /> Save note
+                  </Button>
+                  <p className="text-[9px] leading-relaxed text-zinc-600">
+                    {reviewSession.reviewerNotes.filter((note) => note.candidateId === activeCandidate.id).length} notes · {reviewSession.events.filter((event) => event.candidateId === activeCandidate.id).length} audit events
+                  </p>
+                  {reviewSession.events.filter((event) => event.candidateId === activeCandidate.id).slice(-3).reverse().map((event) => (
+                    <div key={event.id} className="border-l border-white/10 pl-2 text-[9px] text-zinc-500">
+                      <p className="font-medium text-zinc-400">{event.type.replaceAll("-", " ")} · r{event.revision ?? activeCandidate.revision}</p>
+                      <p>{new Date(event.at).toLocaleString()}</p>
+                    </div>
+                  ))}
+                </InspectorSection>
+              ) : null}
             </div>
           ) : null}
         </aside>
@@ -888,12 +1175,45 @@ function InspectorValue({ icon, label, value }: { icon?: React.ReactNode; label:
   )
 }
 
-function TimeBox({ label, value }: { label: string; value: string }) {
+function NumberEditor({
+  label,
+  value,
+  min,
+  max,
+  step,
+  suffix,
+  disabled,
+  onChange,
+}: {
+  label: string
+  value: number
+  min?: number
+  max?: number
+  step: number
+  suffix?: string
+  disabled?: boolean
+  onChange: (value: number) => void
+}) {
   return (
-    <div className="rounded-md border border-white/10 bg-black/30 p-2">
-      <p className="text-[9px] uppercase tracking-wider text-zinc-600">{label}</p>
-      <p className="mt-1 font-mono text-[11px] text-zinc-300">{value}</p>
-    </div>
+    <label className="block rounded-md border border-white/10 bg-black/30 p-2">
+      <span className="block text-[9px] uppercase tracking-wider text-zinc-600">{label}</span>
+      <span className="mt-1 flex items-center gap-1">
+        <input
+          className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-zinc-200 outline-none disabled:text-zinc-500"
+          type="number"
+          value={Number(value.toFixed(3))}
+          min={min}
+          max={max}
+          step={step}
+          disabled={disabled}
+          onChange={(event) => {
+            const next = Number(event.target.value)
+            if (Number.isFinite(next)) onChange(next)
+          }}
+        />
+        {suffix ? <span className="text-[10px] text-zinc-600">{suffix}</span> : null}
+      </span>
+    </label>
   )
 }
 

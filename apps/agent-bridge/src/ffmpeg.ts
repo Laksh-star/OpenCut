@@ -13,6 +13,8 @@ export type CompiledEdit = {
   outputPath: string;
 };
 
+export type RenderProfile = "preview" | "final";
+
 const formatNumber = (value: number) => Number(value.toFixed(6)).toString();
 
 const buildAtempoFilters = (speed: number) => {
@@ -34,7 +36,8 @@ export const compileEditPlan = (
   plan: EditPlan,
   assets: ResolvedAsset[],
   outputPath: string,
-  durationLimitSeconds?: number
+  durationLimitSeconds?: number,
+  profile: RenderProfile = "preview",
 ): CompiledEdit => {
   const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
   const args = ["-hide_banner", "-loglevel", "error", plan.output.overwrite ? "-y" : "-n"];
@@ -108,13 +111,13 @@ export const compileEditPlan = (
     "-c:v",
     "libx264",
     "-preset",
-    "veryfast",
+    profile === "final" ? "medium" : "ultrafast",
     "-crf",
-    "28",
+    profile === "final" ? "20" : "32",
     "-c:a",
     "aac",
     "-b:a",
-    "128k",
+    profile === "final" ? "192k" : "96k",
     "-movflags",
     "+faststart"
   );

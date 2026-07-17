@@ -12,6 +12,7 @@ It does **not** automate the browser, publish media, or claim to be OpenCut's fu
 - `opencut_save_edit_plan`
 - `opencut_compile_edit_plan`
 - `opencut_render_preview`
+- `opencut_build_word_timed_captions`
 - `opencut_approve_and_render_project`
 
 Every file operation is restricted to `OPENCUT_AGENT_ROOT`. Inputs must exist,
@@ -98,9 +99,12 @@ OPENCUT_AGENT_ROOT = "/absolute/path/to/video-workspace"
 The MVP timeline is intentionally narrow: sequential video clips, optional per-clip audio control, reframing by fit-and-pad, and optional SRT/VTT captions muxed into MP4. Text, overlays, transitions, keyframes, music mixing, and native OpenCut project synchronization belong in the next adapter version.
 
 The web app's agent review workspace consumes this same schema for visual
-inspection and approval. Approval atomically saves `approved-edit-plan.json`
-and `opencut.project.json` beside the project's `renders` directory, invokes
-the bounded FFmpeg backend, and records either the rendered or failed state.
+inspection and approval. A reviewer can revise clip ranges, ordering, speed,
+volume, and caption inclusion. Every save creates an immutable numbered plan
+snapshot and invalidates any older preview. Final approval atomically saves
+`approved-edit-plan.json` and `opencut.project.json` beside the project's
+`renders` directory, invokes the higher-quality FFmpeg profile, and records
+source/plan hashes, reviewer notes, and either the rendered or failed state.
 The bridge remains local-only and never uploads or publishes media.
 
 ## Candidate review sessions
@@ -134,9 +138,12 @@ video-workspace/
       "title": "Concise answer",
       "summary": "Fast opening with one core idea",
       "planPath": "candidates/concise/edit-plan.json",
-      "status": "ready-for-review"
+      "status": "ready-for-review",
+      "revision": 1
     }
   ],
+  "reviewerNotes": [],
+  "events": [],
   "updatedAt": "2026-07-16T00:00:00.000Z"
 }
 ```
@@ -155,20 +162,26 @@ selected candidate after refresh, loads only session-authorized captions,
 detects already-rendered outputs, and never asks the reviewer to select the
 multi-gigabyte source file again.
 
-Candidate selection and render approval are deliberately separate actions.
-Selecting a card persists the comparison choice but cannot start FFmpeg;
-rendering starts only from the visible **Approve & render** button. Each
-candidate's approved plan, project record, and render stay inside that
-candidate's directory.
+Candidate selection, preview rendering, and final approval are deliberately
+separate actions. Selecting a card cannot start FFmpeg. The visible **Render
+preview** action produces a fast revision-specific file; **Approve final** stays
+locked until that exact revision has a preview. The final renderer uses a
+higher-quality profile and records an append-only audit trail. Each candidate's
+revision snapshots, previews, approved plan, project record, and final render
+stay inside that candidate's directory.
 
 The HTTP surface for this workflow is:
 
 - `POST /v1/review-sessions` — register a manifest and issue an opaque ID;
 - `GET /v1/review-sessions/:id` — restore manifest and render state;
 - `POST /v1/review-sessions/:id/select` — persist selection only;
+- `POST /v1/review-sessions/:id/revise` — validate, snapshot, and save a numbered revision;
+- `POST /v1/review-sessions/:id/notes` — append a revision-specific reviewer note;
 - `GET|HEAD /v1/review-sessions/:id/media/:assetId` — authorized range streaming;
 - `GET /v1/review-sessions/:id/candidates/:candidateId/captions` — authorized captions;
-- `POST /v1/review-sessions/:id/approve-and-render` — token-gated local render.
+- `POST /v1/review-sessions/:id/render-preview` — token-gated fast preview;
+- `GET|HEAD /v1/review-sessions/:id/candidates/:candidateId/preview` — stream the authorized preview;
+- `POST /v1/review-sessions/:id/approve-and-render` — token-gated final render after preview.
 
 Session IDs are process-local: restarting the bridge creates a new short URL,
 while the manifest's selected/rendered state remains on disk.

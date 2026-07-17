@@ -1,6 +1,6 @@
 # OpenCut AI-Agent Extension Project Report
 
-**Status date:** 16 July 2026
+**Status date:** 17 July 2026
 **Fork:** [Laksh-star/OpenCut](https://github.com/Laksh-star/OpenCut)
 **Upstream:** [OpenCut-app/OpenCut](https://github.com/OpenCut-app/OpenCut)
 **Working branch:** `codex/agent-bridge-mvp`
@@ -12,12 +12,12 @@ We extended the OpenCut rewrite with a working, local-first path from an AI agen
 
 The fork now contains:
 
-- an MCP server that lets agents inspect local media, validate and save structured edit plans, compile FFmpeg commands, and render previews;
-- a browser-based OpenCut review workspace for importing an agent plan, attaching the source video locally, reviewing timeline decisions, and approving the render;
+- an MCP server that lets agents inspect local media, validate and save structured edit plans, build word-timed captions, compile FFmpeg commands, and render previews;
+- a browser-based OpenCut review workspace for revising an agent plan, comparing candidates, recording reviewer notes, previewing the current revision, and separately approving the final render;
 - opaque, persistent candidate-review sessions that compare multiple isolated edits without putting plan JSON in the URL;
 - HTTP byte-range streaming for multi-gigabyte local sources, so the reviewer no longer reselects the file in the browser;
 - a loopback-only HTTP bridge that connects the review UI to the renderer;
-- persistent approval and project records;
+- immutable plan revisions, append-only review events, and persistent approval/project records with SHA-256 provenance;
 - automated schema, path-security, rendering, project-persistence, and web-model tests;
 - a completed real-video demonstration using the 1986 Swami Ranganathananda interview;
 - a private Sites visualization explaining the complete behind-the-scenes workflow.
@@ -100,7 +100,7 @@ Validation rejects duplicate IDs, missing assets, caption/video type mismatches,
 
 ### 4.2 MCP agent bridge
 
-The new `apps/agent-bridge` package exposes seven tools:
+The new `apps/agent-bridge` package exposes eight tools:
 
 1. `opencut_capabilities`
 2. `opencut_inspect_media`
@@ -109,8 +109,9 @@ The new `apps/agent-bridge` package exposes seven tools:
 5. `opencut_compile_edit_plan`
 6. `opencut_render_preview`
 7. `opencut_approve_and_render_project`
+8. `opencut_build_word_timed_captions`
 
-The agent can inspect media with FFprobe, calculate output duration, atomically save a plan, inspect the exact shell-free FFmpeg argument list, render a bounded preview, or persist and render an explicitly approved project.
+The agent can inspect media with FFprobe, calculate output duration, atomically save a plan, convert provider-independent word timestamps into speaker-aware SRT cues, inspect the exact shell-free FFmpeg argument list, render a bounded preview, or persist and render an explicitly approved project.
 
 ### 4.3 Safe local execution boundary
 
@@ -152,10 +153,14 @@ The web app now presents a usable review boundary rather than a placeholder page
 - map source clips onto a sequential output timeline;
 - select a clip, seek to its exact source in-point, and stop at its out-point;
 - show speed, volume, source range, and clip duration;
+- edit source in/out points, clip order, speed, volume, and caption inclusion;
+- save immutable numbered plan revisions and invalidate stale previews after an edit;
+- record reviewer notes and show the append-only review audit trail;
 - download the unchanged plan for handoff;
 - detect whether the local render bridge is online;
-- show review, rendering, rendered, retry, and failure states;
-- send an approved plan to the local bridge through **Approve & render**.
+- render a fast revision-specific preview before final approval is available;
+- show review, previewing, preview-ready, rendering, rendered, retry, and failure states;
+- send the current previewed revision to the high-quality final renderer through **Approve final**.
 
 ### 4.6 Approval, persistence, and local HTTP bridge
 
@@ -185,11 +190,15 @@ The fork now supports a complete candidate-review session rather than a long
 - the browser receives only `?session=<id>` and restores state from the bridge;
 - candidate cards expose title, summary, duration, clip count, and status;
 - selecting a candidate persists the choice but does not authorize rendering;
-- only the visible **Approve & render** action can start FFmpeg, using a session approval token;
+- edits create immutable `revisions/revision-N.edit-plan.json` snapshots;
+- the preview uses a fast `ultrafast`/CRF 32 profile and is tied to the candidate revision;
+- final approval is disabled until the current revision has a successful preview;
+- final rendering uses a separate `medium`/CRF 20 profile and a session approval token;
+- reviewer notes, revision metadata, and selection/preview/approval/render events are persisted in the session manifest;
 - `GET`/`HEAD` media requests support HTTP byte ranges and authorize only assets listed in the session;
 - caption requests are tied to a candidate plan rather than accepting an arbitrary session path;
 - existing output files are detected and shown as rendered after refresh;
-- approved plan, project record, and MP4 remain inside the selected candidate directory;
+- approved plan, project record, preview/final MP4s, and provenance hashes remain inside the selected candidate directory;
 - missing nested output directories are created only after their nearest existing ancestor is verified inside `OPENCUT_AGENT_ROOT`;
 - `opencut-review <review-session.json>` starts the bridge and web UI and prints the short review URL.
 
@@ -271,20 +280,20 @@ The Sites project is currently private and owner-only. The published page preser
 
 ## 8. Verification record
 
-The following checks were rerun on 16 July 2026 using the repo-pinned Bun 1.3.11 executable:
+The following checks were rerun on 17 July 2026 using the repo-pinned Bun 1.3.11 executable:
 
 | Check | Result |
 | --- | --- |
-| Agent bridge unit tests | **Pass:** 14 tests across schema, FFmpeg compilation, byte ranges, path security, project paths, review-session persistence, and candidate isolation. |
+| Agent bridge unit tests | **Pass:** 17 tests across schema, FFmpeg profiles, timed-caption grouping, byte ranges, path security, project paths, immutable revisions, review events, and candidate isolation. |
 | Agent bridge TypeScript check | **Pass:** `tsc --noEmit`. |
 | Approval/render smoke | **Pass:** approved plan and project record persisted; 2-second generated-media MP4 rendered. |
 | FFmpeg render smoke | **Pass:** 2-second MP4 rendered; FFmpeg exited successfully. |
-| Review-session HTTP smoke | **Pass:** opaque registration, authorized 100-byte range, session captions, selection, approval, render, and persisted state. |
-| Web model tests | **Pass:** 7 tests covering shared-schema parsing, timeline mapping, captions, and session helpers. |
+| Review-session HTTP smoke | **Pass:** opaque registration, authorized 100-byte range, session captions, selection, revision-specific preview, final approval/render, SHA-256 provenance, and persisted state. |
+| Web model tests | **Pass:** 8 tests covering shared-schema parsing, timeline editing/reordering, captions, preview gates, and session helpers. |
 | Web production build | **Pass:** Vite client and server builds completed. |
-| Browser workflow | **Pass:** candidate comparison, pre-selection approval lock, selection, refresh restoration, captions, retry state, and rendered-state UI. |
+| Browser workflow | **Pass:** source trim and clip reorder, immutable revision save, reviewer note, preview-before-final gate, final render, seven-event audit trail, persisted hashes, and zero browser warnings/errors. |
 | Real output inspection | **Pass:** FFprobe confirmed the expected video, audio, subtitle, duration, resolution, and frame rate. |
-| MCP tool-list smoke | **Pass:** all seven tools are listed and the capability call succeeds. |
+| MCP tool-list smoke | **Pass:** all eight tools are listed and the capability call succeeds. |
 
 ## 9. What each component is responsible for
 
@@ -295,13 +304,16 @@ The following checks were rerun on 16 July 2026 using the repo-pinned Bun 1.3.11
 - finds candidate moments and develops the editorial concept;
 - creates the declarative edit plan and captions;
 - invokes bridge tools and explains the proposed edit;
+- produces provider-independent word-timed caption cues when transcript timing is available;
 - prepares verification and delivery artifacts.
 
 ### OpenCut review workspace
 
 - presents the agent's plan in an editor-like visual context;
 - lets the human attach and review local source video;
-- exposes exact source ranges and timeline behavior;
+- exposes and edits exact source ranges, order, speed, volume, captions, and timeline behavior;
+- preserves numbered revisions, reviewer notes, and the audit trail;
+- requires a successful preview for the current revision before final approval;
 - provides the explicit approval boundary;
 - reports bridge and render state.
 
@@ -311,6 +323,8 @@ The following checks were rerun on 16 July 2026 using the repo-pinned Bun 1.3.11
 - enforces the workspace and request safety boundaries;
 - inspects media and persists plans/project records;
 - compiles deterministic renderer arguments;
+- derives speaker-aware SRT cues from timed words;
+- records plan/source hashes and agent metadata without storing credentials;
 - connects the approved UI action to local execution.
 
 ### FFmpeg / FFprobe
@@ -331,23 +345,25 @@ The MVP deliberately does not yet provide:
 
 - integration with OpenCut's future native Editor API or Rust media core;
 - native OpenCut timeline/project synchronization beyond the new JSON project record;
-- interactive timeline mutation or clip trimming in the review UI;
 - transitions, overlays, titles, keyframes, masks, or effects;
 - music mixing or advanced multi-track audio;
 - multi-track or non-sequential timeline composition;
 - formats other than MP4;
 - remote rendering, uploading, or social publishing;
 - multi-user or remote authentication beyond the loopback-only local boundary and per-process session tokens;
-- automatic resolution of transcription errors or semantic caption timing;
+- automatic resolution of transcription errors, provider-specific word extraction, or semantic caption cleanup;
 - a GitHub pull request from the feature branch to the fork's `main` branch.
 
 ## 11. Recommended next development steps
 
-1. **Add editable review controls.** Allow the human to adjust source in/out points, ordering, speed, and caption inclusion before approval.
+The July 17 stabilization pass completed three of the first five roadmap items
+and established the provider-independent base for the fourth:
+
+1. **Editable review controls — complete.** The reviewer can adjust source in/out points, ordering, speed, volume, and caption inclusion. Saving creates immutable numbered revision snapshots and invalidates older previews.
 2. **Formalize the project adapter.** Map the current plan/project record into OpenCut's native Editor API when it lands.
-3. **Add preview versus final-render modes.** Keep fast bounded previews, then require a second explicit approval for a full-quality render.
-4. **Improve transcription and caption alignment.** Add word-level timestamps, speaker cleanup, and caption-safe line breaking.
-5. **Add provenance and revision history.** Record source hashes, plan revisions, agent/model metadata, reviewer notes, and approval events without storing secrets.
+3. **Preview versus final-render modes — complete.** Fast `ultrafast`/CRF 32 previews are revision-specific. Final approval remains locked until the current revision has a preview, then uses the separate `medium`/CRF 20 profile.
+4. **Improve transcription and caption alignment — foundation complete.** The new provider-independent word-timestamp schema performs speaker-aware cue grouping, gap/sentence segmentation, caption-safe wrapping, and SRT generation. Real-media provider evaluation and semantic cleanup remain future work.
+5. **Provenance and revision history — complete.** The workflow records immutable plan revisions, source and plan SHA-256 hashes, optional agent/model metadata, reviewer notes, and append-only selection/preview/approval/render events without storing secrets.
 6. **Expand the plan schema carefully.** Introduce titles, transitions, music, and richer layout alongside validation, review UI, and renderer tests.
 7. **Add publication as a separate gated workflow.** Keep export/publishing out of the renderer and require an independent destination-specific approval.
 8. **Open a pull request when ready.** Review the cumulative branch as one coherent local-first agent workflow before merging into the fork's `main` branch.

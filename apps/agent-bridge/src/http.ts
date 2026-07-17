@@ -3,14 +3,14 @@
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname } from "node:path";
+import { extname, posix } from "node:path";
 
 import { z } from "zod/v4";
 
 import { getWorkspaceRoot, resolveInputPath } from "./paths.ts";
 import { parseByteRange } from "./range.ts";
-import { ReviewSessionRegistry } from "./review-session.ts";
-import { approveAndRenderProject, capabilities } from "./service.ts";
+import { createReviewEvent, ReviewSessionRegistry } from "./review-session.ts";
+import { approveAndRenderProject, capabilities, renderPlanValue } from "./service.ts";
 import { editPlanSchema } from "./schema.ts";
 
 const host = "127.0.0.1";
@@ -31,6 +31,20 @@ const approvalRequestSchema = z.object({
 });
 const registerSessionSchema = z.object({ manifestPath: z.string().min(1) });
 const selectCandidateSchema = z.object({ candidateId: z.string().min(1) });
+const reviseCandidateSchema = z.object({
+  candidateId: z.string().min(1),
+  plan: editPlanSchema,
+  note: z.string().trim().max(1_000).optional(),
+});
+const reviewerNoteRequestSchema = z.object({
+  candidateId: z.string().min(1),
+  text: z.string().trim().min(1).max(2_000),
+});
+const previewSessionCandidateSchema = z.object({
+  candidateId: z.string().min(1),
+  approvalToken: z.string().uuid(),
+  renderLimitSeconds: z.number().min(0.1).max(120).default(60),
+});
 const approveSessionCandidateSchema = z.object({
   candidateId: z.string().min(1),
   approvalToken: z.string().uuid(),
@@ -185,10 +199,34 @@ const server = createServer(async (request, response) => {
         updatedAt: new Date().toISOString(),
         candidates: session.candidates.map((candidate) => ({
           ...candidate,
-          status: candidate.id === input.candidateId && candidate.status !== "rendered" ? "selected" : candidate.status === "selected" ? "ready-for-review" : candidate.status,
+          status: candidate.id === input.candidateId && candidate.status !== "rendered"
+            ? candidate.lastPreviewRevision === candidate.revision ? "preview-ready" : "selected"
+            : candidate.status === "selected" ? "ready-for-review" : candidate.status,
         })),
+        events: [...session.events, createReviewEvent("candidate-selected", {
+          actor: "reviewer", candidateId: input.candidateId,
+          revision: session.candidates.find((candidate) => candidate.id === input.candidateId)?.revision,
+        })],
       }));
       sendJson(request, response, 200, updated);
+      return;
+    }
+
+    const reviseRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/revise$/);
+    if (request.method === "POST" && reviseRoute) {
+      const input = reviseCandidateSchema.parse(await readJsonBody(request));
+      sendJson(request, response, 200, await registry.reviseCandidate(
+        reviseRoute[0]!, input.candidateId, input.plan, input.note,
+      ));
+      return;
+    }
+
+    const notesRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/notes$/);
+    if (request.method === "POST" && notesRoute) {
+      const input = reviewerNoteRequestSchema.parse(await readJsonBody(request));
+      sendJson(request, response, 200, await registry.addReviewerNote(
+        notesRoute[0]!, input.candidateId, input.text,
+      ));
       return;
     }
 
@@ -223,6 +261,87 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    const previewMediaRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/candidates\/([^/]+)\/preview$/);
+    if ((request.method === "GET" || request.method === "HEAD") && previewMediaRoute) {
+      const session = await registry.load(previewMediaRoute[0]!);
+      const candidate = session.candidates.find((entry) => entry.id === previewMediaRoute[1]);
+      if (!candidate?.previewOutputPath || !candidate.previewExists) {
+        throw new Error("This candidate does not have a rendered preview");
+      }
+      await streamMedia(request, response, candidate.previewOutputPath);
+      return;
+    }
+
+    const previewRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/render-preview$/);
+    if (request.method === "POST" && previewRoute) {
+      if (approvalInProgress) {
+        sendJson(request, response, 409, { error: "Another local render is already in progress" });
+        return;
+      }
+      const input = previewSessionCandidateSchema.parse(await readJsonBody(request));
+      const registered = registry.get(previewRoute[0]!);
+      if (registered.approvalToken !== input.approvalToken) {
+        sendJson(request, response, 403, { error: "Invalid review action token" });
+        return;
+      }
+      const loaded = await registry.load(previewRoute[0]!);
+      if (loaded.selectedCandidateId !== input.candidateId) throw new Error("Candidate must be selected before preview rendering");
+      const candidate = loaded.candidates.find((entry) => entry.id === input.candidateId);
+      if (!candidate) throw new Error("Unknown candidate");
+      if (candidate.outputExists || candidate.status === "rendered") throw new Error("Rendered candidates are immutable");
+      const previewOutputPath = posix.join(
+        posix.dirname(candidate.planPath), "renders", `preview-r${candidate.revision}.mp4`,
+      );
+      approvalInProgress = true;
+      await registry.update(previewRoute[0]!, (session) => ({
+        ...session,
+        updatedAt: new Date().toISOString(),
+        candidates: session.candidates.map((entry) => entry.id === input.candidateId
+          ? { ...entry, status: "previewing", error: undefined }
+          : entry),
+        events: [...session.events, createReviewEvent("preview-requested", {
+          actor: "reviewer", candidateId: input.candidateId, revision: candidate.revision,
+        })],
+      }));
+      try {
+        const result = await renderPlanValue(
+          candidate.plan, previewOutputPath, input.renderLimitSeconds, "preview",
+        );
+        const updated = await registry.update(previewRoute[0]!, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          candidates: session.candidates.map((entry) => entry.id === input.candidateId ? {
+            ...entry,
+            status: "preview-ready",
+            lastPreviewRevision: candidate.revision,
+            previewOutputPath,
+            error: undefined,
+          } : entry),
+          events: [...session.events, createReviewEvent("preview-rendered", {
+            actor: "system", candidateId: input.candidateId, revision: candidate.revision,
+            detail: previewOutputPath,
+          })],
+        }));
+        sendJson(request, response, 200, { ...result, mode: "preview", session: updated });
+      } catch (error) {
+        const message = (error instanceof Error ? error.message : String(error)).slice(-8_000);
+        await registry.update(previewRoute[0]!, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          candidates: session.candidates.map((entry) => entry.id === input.candidateId
+            ? { ...entry, status: "failed", error: message }
+            : entry),
+          events: [...session.events, createReviewEvent("preview-failed", {
+            actor: "system", candidateId: input.candidateId, revision: candidate.revision, detail: message,
+          })],
+        }));
+        throw error;
+      } finally {
+        approvalInProgress = false;
+      }
+      return;
+    }
+
     const approveRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/approve-and-render$/);
     if (request.method === "POST" && approveRoute) {
       if (approvalInProgress) {
@@ -240,15 +359,47 @@ const server = createServer(async (request, response) => {
       const candidate = loaded.candidates.find((entry) => entry.id === input.candidateId);
       if (!candidate) throw new Error("Unknown candidate");
       if (candidate.outputExists || candidate.status === "rendered") throw new Error("Candidate is already rendered");
+      if (!candidate.previewExists || candidate.lastPreviewRevision !== candidate.revision) {
+        throw new Error("Render a preview of the current revision before final approval");
+      }
       approvalInProgress = true;
-      await registry.update(approveRoute[0]!, (session) => ({ ...session, updatedAt: new Date().toISOString(), candidates: session.candidates.map((entry) => entry.id === input.candidateId ? { ...entry, status: "rendering", error: undefined } : entry) }));
+      await registry.update(approveRoute[0]!, (session) => ({
+        ...session,
+        updatedAt: new Date().toISOString(),
+        candidates: session.candidates.map((entry) => entry.id === input.candidateId ? { ...entry, status: "rendering", error: undefined } : entry),
+        events: [...session.events, createReviewEvent("final-approved", {
+          actor: "reviewer", candidateId: input.candidateId, revision: candidate.revision,
+        })],
+      }));
       try {
-        const result = await approveAndRenderProject(candidate.plan, { renderLimitSeconds: input.renderLimitSeconds, approvalSource: "web-review" });
-        const updated = await registry.update(approveRoute[0]!, (session) => ({ ...session, updatedAt: new Date().toISOString(), candidates: session.candidates.map((entry) => entry.id === input.candidateId ? { ...entry, status: "rendered", error: undefined } : entry) }));
+        const provenance = await registry.provenance(approveRoute[0]!, input.candidateId);
+        const latestNote = loaded.reviewerNotes.filter((note) => note.candidateId === input.candidateId).at(-1)?.text;
+        const result = await approveAndRenderProject(candidate.plan, {
+          renderLimitSeconds: input.renderLimitSeconds,
+          approvalSource: "web-review",
+          provenance,
+          reviewerNote: latestNote,
+        });
+        const updated = await registry.update(approveRoute[0]!, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          candidates: session.candidates.map((entry) => entry.id === input.candidateId ? { ...entry, status: "rendered", error: undefined } : entry),
+          events: [...session.events, createReviewEvent("final-rendered", {
+            actor: "system", candidateId: input.candidateId, revision: candidate.revision,
+            detail: candidate.plan.output.path,
+          })],
+        }));
         sendJson(request, response, 200, { ...result, session: updated });
       } catch (error) {
         const message = (error instanceof Error ? error.message : String(error)).slice(-8_000);
-        await registry.update(approveRoute[0]!, (session) => ({ ...session, updatedAt: new Date().toISOString(), candidates: session.candidates.map((entry) => entry.id === input.candidateId ? { ...entry, status: "failed", error: message } : entry) }));
+        await registry.update(approveRoute[0]!, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          candidates: session.candidates.map((entry) => entry.id === input.candidateId ? { ...entry, status: "failed", error: message } : entry),
+          events: [...session.events, createReviewEvent("final-failed", {
+            actor: "system", candidateId: input.candidateId, revision: candidate.revision, detail: message,
+          })],
+        }));
         throw error;
       } finally {
         approvalInProgress = false;

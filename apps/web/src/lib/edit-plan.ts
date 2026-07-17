@@ -86,6 +86,41 @@ export function getTimelineDuration(plan: EditPlan): number {
   return buildTimelineSegments(plan).at(-1)?.timelineEnd ?? 0
 }
 
+export function updatePlanClip(
+  plan: EditPlan,
+  clipId: string,
+  patch: Partial<EditPlan["timeline"]["clips"][number]>,
+): EditPlan {
+  return parseEditPlan({
+    ...plan,
+    timeline: {
+      ...plan.timeline,
+      clips: plan.timeline.clips.map((clip) => clip.id === clipId ? { ...clip, ...patch } : clip),
+    },
+  })
+}
+
+export function movePlanClip(plan: EditPlan, clipId: string, direction: -1 | 1): EditPlan {
+  const clips = [...plan.timeline.clips]
+  const index = clips.findIndex((clip) => clip.id === clipId)
+  const nextIndex = index + direction
+  if (index < 0 || nextIndex < 0 || nextIndex >= clips.length) return plan
+  const [clip] = clips.splice(index, 1)
+  clips.splice(nextIndex, 0, clip!)
+  return parseEditPlan({ ...plan, timeline: { ...plan.timeline, clips } })
+}
+
+export function setPlanCaptionsEnabled(plan: EditPlan, enabled: boolean): EditPlan {
+  const captionAsset = plan.assets.find((asset) => asset.kind === "captions")
+  return parseEditPlan({
+    ...plan,
+    timeline: {
+      ...plan.timeline,
+      captionsAssetId: enabled ? captionAsset?.id : undefined,
+    },
+  })
+}
+
 export function formatTimecode(seconds: number): string {
   const totalTenths = Math.round(Math.max(0, seconds) * 10)
   const minutes = Math.floor(totalTenths / 600)

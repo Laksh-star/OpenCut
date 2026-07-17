@@ -1,21 +1,56 @@
-import { randomUUID } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
-import { posix } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { mkdir, readFile, stat } from "node:fs/promises";
+import { dirname, posix } from "node:path";
 
 import { z } from "zod/v4";
 
-import { readEditPlan, writeJsonFile } from "./files.ts";
-import { getWorkspaceRoot, resolveInputPath } from "./paths.ts";
-import type { EditPlan } from "./schema.ts";
+import { readEditPlan, writeEditPlan, writeJsonFile } from "./files.ts";
+import { getWorkspaceRoot, resolveInputPath, resolveOutputPath } from "./paths.ts";
+import { editPlanSchema, type EditPlan } from "./schema.ts";
 
 const identifier = z.string().min(1).max(80).regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
+const timestamp = z.string().datetime();
+
 export const candidateStatusSchema = z.enum([
   "ready-for-review",
   "selected",
+  "previewing",
+  "preview-ready",
   "rendering",
   "rendered",
   "failed",
 ]);
+
+export const reviewEventTypeSchema = z.enum([
+  "candidate-selected",
+  "plan-revised",
+  "preview-requested",
+  "preview-rendered",
+  "preview-failed",
+  "reviewer-note-added",
+  "final-approved",
+  "final-rendered",
+  "final-failed",
+]);
+
+export const reviewEventSchema = z.object({
+  id: z.string().uuid(),
+  type: reviewEventTypeSchema,
+  at: timestamp,
+  candidateId: identifier.optional(),
+  revision: z.number().int().positive().optional(),
+  actor: z.enum(["reviewer", "agent", "system"]).default("system"),
+  detail: z.string().max(1_000).optional(),
+});
+
+export const reviewerNoteSchema = z.object({
+  id: z.string().uuid(),
+  candidateId: identifier,
+  revision: z.number().int().positive(),
+  text: z.string().trim().min(1).max(2_000),
+  createdAt: timestamp,
+});
 
 export const reviewSessionSchema = z.object({
   version: z.literal("1"),
@@ -33,10 +68,19 @@ export const reviewSessionSchema = z.object({
     planPath: z.string().min(1),
     thumbnailPath: z.string().min(1).optional(),
     status: candidateStatusSchema.default("ready-for-review"),
+    revision: z.number().int().positive().default(1),
+    lastPreviewRevision: z.number().int().positive().optional(),
+    previewOutputPath: z.string().min(1).optional(),
     error: z.string().max(8_000).optional(),
   })).min(1),
   selectedCandidateId: identifier.optional(),
-  updatedAt: z.string().datetime(),
+  reviewerNotes: z.array(reviewerNoteSchema).default([]),
+  events: z.array(reviewEventSchema).default([]),
+  createdBy: z.object({
+    agent: z.string().min(1).max(120).optional(),
+    model: z.string().min(1).max(160).optional(),
+  }).optional(),
+  updatedAt: timestamp,
 }).superRefine((session, context) => {
   const ids = new Set<string>();
   for (const [index, candidate] of session.candidates.entries()) {
@@ -51,19 +95,52 @@ export const reviewSessionSchema = z.object({
 });
 
 export type ReviewSession = z.infer<typeof reviewSessionSchema>;
+export type ReviewEventType = z.infer<typeof reviewEventTypeSchema>;
 export type ReviewCandidateStatus = z.infer<typeof candidateStatusSchema>;
 
 export type LoadedReviewCandidate = ReviewSession["candidates"][number] & {
   plan: EditPlan;
   outputExists: boolean;
+  previewExists: boolean;
 };
 
 export type LoadedReviewSession = Omit<ReviewSession, "candidates"> & {
   candidates: LoadedReviewCandidate[];
 };
 
+export const createReviewEvent = (
+  type: ReviewEventType,
+  options: Partial<Omit<z.infer<typeof reviewEventSchema>, "id" | "type" | "at">> = {},
+) => reviewEventSchema.parse({ id: randomUUID(), type, at: new Date().toISOString(), ...options });
+
 export const readReviewSession = async (path: string) =>
   reviewSessionSchema.parse(JSON.parse(await readFile(path, "utf8")));
+
+const fileExists = async (root: string, requestedPath: string | undefined) => {
+  if (!requestedPath) return false;
+  try {
+    const path = await resolveInputPath(root, requestedPath);
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+};
+
+const candidateDirectoryFor = (candidate: ReviewSession["candidates"][number]) =>
+  posix.dirname(candidate.planPath);
+
+const assertCandidateOutput = (
+  candidate: ReviewSession["candidates"][number],
+  outputPath: string,
+) => {
+  const outputDirectory = posix.dirname(outputPath);
+  const projectDirectory = posix.basename(outputDirectory) === "renders"
+    ? posix.dirname(outputDirectory)
+    : outputDirectory;
+  if (projectDirectory !== candidateDirectoryFor(candidate)) {
+    throw new Error(`Candidate ${candidate.id} must render inside its own candidate directory`);
+  }
+};
 
 export const loadReviewSession = async (path: string): Promise<LoadedReviewSession> => {
   const root = await getWorkspaceRoot();
@@ -71,21 +148,25 @@ export const loadReviewSession = async (path: string): Promise<LoadedReviewSessi
   const candidates = await Promise.all(session.candidates.map(async (candidate) => {
     const planPath = await resolveInputPath(root, candidate.planPath);
     const plan = await readEditPlan(planPath);
-    const outputDirectory = posix.dirname(plan.output.path);
-    const projectDirectory = posix.basename(outputDirectory) === "renders" ? posix.dirname(outputDirectory) : outputDirectory;
-    if (projectDirectory !== posix.dirname(candidate.planPath)) {
-      throw new Error(`Candidate ${candidate.id} must render inside its own candidate directory`);
-    }
-    let outputExists = false;
-    try {
-      const outputPath = await resolveInputPath(root, plan.output.path);
-      outputExists = (await stat(outputPath)).isFile();
-    } catch {
-      outputExists = false;
-    }
-    return { ...candidate, plan, outputExists, status: outputExists ? "rendered" as const : candidate.status };
+    assertCandidateOutput(candidate, plan.output.path);
+    if (candidate.previewOutputPath) assertCandidateOutput(candidate, candidate.previewOutputPath);
+    const outputExists = await fileExists(root, plan.output.path);
+    const previewExists = await fileExists(root, candidate.previewOutputPath);
+    return {
+      ...candidate,
+      plan,
+      outputExists,
+      previewExists,
+      status: outputExists ? "rendered" as const : candidate.status,
+    };
   }));
   return { ...session, candidates };
+};
+
+const hashPath = async (path: string) => {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
 };
 
 type RegisteredSession = { manifestPath: string; approvalToken: string };
@@ -120,5 +201,97 @@ export class ReviewSessionRegistry {
     const next = reviewSessionSchema.parse(mutate(session));
     await writeJsonFile(registered.manifestPath, next);
     return this.load(sessionId);
+  }
+
+  async reviseCandidate(sessionId: string, candidateId: string, value: unknown, note?: string) {
+    const root = await getWorkspaceRoot();
+    const registered = this.get(sessionId);
+    const session = await readReviewSession(registered.manifestPath);
+    const candidate = session.candidates.find((entry) => entry.id === candidateId);
+    if (!candidate) throw new Error("Unknown candidate");
+    if (candidate.status === "rendering" || candidate.status === "rendered") {
+      throw new Error("Rendered candidates are immutable; create a new candidate to revise them");
+    }
+    const planPath = await resolveInputPath(root, candidate.planPath);
+    const currentPlan = await readEditPlan(planPath);
+    const nextPlan = editPlanSchema.parse(value);
+    assertCandidateOutput(candidate, nextPlan.output.path);
+    if (JSON.stringify(nextPlan.assets) !== JSON.stringify(currentPlan.assets)) {
+      throw new Error("Review revisions cannot replace candidate assets");
+    }
+    if (JSON.stringify(nextPlan.project) !== JSON.stringify(currentPlan.project)) {
+      throw new Error("Review revisions cannot replace project settings");
+    }
+    if (JSON.stringify(nextPlan.output) !== JSON.stringify(currentPlan.output)) {
+      throw new Error("Review revisions cannot replace the final output contract");
+    }
+
+    const nextRevision = candidate.revision + 1;
+    const revisionDirectory = posix.join(candidateDirectoryFor(candidate), "revisions");
+    const currentSnapshot = posix.join(revisionDirectory, `revision-${candidate.revision}.edit-plan.json`);
+    const nextSnapshot = posix.join(revisionDirectory, `revision-${nextRevision}.edit-plan.json`);
+    const currentSnapshotPath = await resolveOutputPath(root, currentSnapshot);
+    const nextSnapshotPath = await resolveOutputPath(root, nextSnapshot);
+    await mkdir(dirname(currentSnapshotPath), { recursive: true });
+    if (!(await fileExists(root, currentSnapshot))) await writeEditPlan(currentSnapshotPath, currentPlan);
+    await writeEditPlan(nextSnapshotPath, nextPlan);
+    await writeEditPlan(planPath, nextPlan);
+
+    return this.update(sessionId, (current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      candidates: current.candidates.map((entry) => entry.id === candidateId ? {
+        ...entry,
+        revision: nextRevision,
+        lastPreviewRevision: undefined,
+        previewOutputPath: undefined,
+        status: current.selectedCandidateId === candidateId ? "selected" : "ready-for-review",
+        error: undefined,
+      } : entry),
+      events: [...current.events, createReviewEvent("plan-revised", {
+        actor: "reviewer",
+        candidateId,
+        revision: nextRevision,
+        detail: note?.trim() || `Saved revision ${nextRevision}`,
+      })],
+    }));
+  }
+
+  async addReviewerNote(sessionId: string, candidateId: string, text: string) {
+    return this.update(sessionId, (session) => {
+      const candidate = session.candidates.find((entry) => entry.id === candidateId);
+      if (!candidate) throw new Error("Unknown candidate");
+      const note = reviewerNoteSchema.parse({
+        id: randomUUID(), candidateId, revision: candidate.revision, text, createdAt: new Date().toISOString(),
+      });
+      return {
+        ...session,
+        updatedAt: new Date().toISOString(),
+        reviewerNotes: [...session.reviewerNotes, note],
+        events: [...session.events, createReviewEvent("reviewer-note-added", {
+          actor: "reviewer", candidateId, revision: candidate.revision, detail: note.text,
+        })],
+      };
+    });
+  }
+
+  async provenance(sessionId: string, candidateId: string) {
+    const root = await getWorkspaceRoot();
+    const session = await this.load(sessionId);
+    const candidate = session.candidates.find((entry) => entry.id === candidateId);
+    if (!candidate) throw new Error("Unknown candidate");
+    const planPath = await resolveInputPath(root, candidate.planPath);
+    const sourceHashes = await Promise.all(session.sourceAssets.map(async (asset) => ({
+      assetId: asset.id,
+      path: asset.path,
+      sha256: await hashPath(await resolveInputPath(root, asset.path)),
+    })));
+    return {
+      candidateId,
+      revision: candidate.revision,
+      planSha256: await hashPath(planPath),
+      sourceHashes,
+      createdBy: session.createdBy,
+    };
   }
 }

@@ -77,16 +77,37 @@ try {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ candidateId: "one" }),
   });
   if (!selectedResponse.ok) throw new Error(await selectedResponse.text());
+  const previewResponse = await fetch(`${base}/v1/review-sessions/${registration.sessionId}/render-preview`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ candidateId: "one", approvalToken: registration.approvalToken, renderLimitSeconds: 2 }),
+  });
+  if (!previewResponse.ok) throw new Error(await previewResponse.text());
+  const previewMedia = await fetch(`${base}/v1/review-sessions/${registration.sessionId}/candidates/one/preview`, {
+    headers: { Range: "bytes=0-99" },
+  });
+  if (previewMedia.status !== 206 || (await previewMedia.arrayBuffer()).byteLength !== 100) {
+    throw new Error("Rendered preview range response failed");
+  }
   const approvedResponse = await fetch(`${base}/v1/review-sessions/${registration.sessionId}/approve-and-render`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ candidateId: "one", approvalToken: registration.approvalToken, renderLimitSeconds: 2 }),
   });
   if (!approvedResponse.ok) throw new Error(await approvedResponse.text());
-  const approved = await approvedResponse.json() as { session: { candidates: Array<{ status: string }> } };
+  const approved = await approvedResponse.json() as { session: { candidates: Array<{ status: string }>; events: Array<{ type: string }> } };
   const outputBytes = (await stat(join(candidateDirectory, "renders", "output.mp4"))).size;
   const record = JSON.parse(await readFile(join(candidateDirectory, "opencut.project.json"), "utf8"));
   if (approved.session.candidates[0]?.status !== "rendered" || record.status !== "rendered") throw new Error("Session did not persist rendered state");
-  console.log(JSON.stringify({ root, mediaRangeBytes: 100, captions: "authorized", outputBytes, status: record.status }, null, 2));
+  if (!record.provenance?.planSha256 || record.render?.mode !== "final") throw new Error("Final render provenance was not persisted");
+  console.log(JSON.stringify({
+    root,
+    mediaRangeBytes: 100,
+    captions: "authorized",
+    preview: "rendered-and-streamed",
+    outputBytes,
+    status: record.status,
+    provenance: "sha256",
+    events: approved.session.events.map((event) => event.type),
+  }, null, 2));
 } finally {
   child.kill("SIGTERM");
 }

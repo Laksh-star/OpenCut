@@ -1,6 +1,13 @@
 import type { EditPlan } from "./edit-plan.ts"
 
-export type CandidateStatus = "ready-for-review" | "selected" | "rendering" | "rendered" | "failed"
+export type CandidateStatus =
+  | "ready-for-review"
+  | "selected"
+  | "previewing"
+  | "preview-ready"
+  | "rendering"
+  | "rendered"
+  | "failed"
 
 export type ReviewCandidate = {
   id: string
@@ -9,9 +16,29 @@ export type ReviewCandidate = {
   planPath: string
   thumbnailPath?: string
   status: CandidateStatus
+  revision: number
+  lastPreviewRevision?: number
+  previewOutputPath?: string
   error?: string
   plan: EditPlan
   outputExists: boolean
+  previewExists: boolean
+}
+export type ReviewerNote = {
+  id: string
+  candidateId: string
+  revision: number
+  text: string
+  createdAt: string
+}
+export type ReviewEvent = {
+  id: string
+  type: string
+  at: string
+  candidateId?: string
+  revision?: number
+  actor: "reviewer" | "agent" | "system"
+  detail?: string
 }
 export type ReviewSession = {
   version: "1"
@@ -20,6 +47,9 @@ export type ReviewSession = {
   sourceAssets: Array<{ id: string; label: string; path: string }>
   candidates: ReviewCandidate[]
   selectedCandidateId?: string
+  reviewerNotes: ReviewerNote[]
+  events: ReviewEvent[]
+  createdBy?: { agent?: string; model?: string }
   updatedAt: string
   approvalToken: string
 }
@@ -31,3 +61,6 @@ export const mediaAssetForPlan = (session: ReviewSession, plan: EditPlan) => {
   const video = plan.assets.find((asset) => asset.kind === "video")
   return session.sourceAssets.find((asset) => asset.id === video?.id || asset.path === video?.path)
 }
+
+export const candidateHasCurrentPreview = (candidate: ReviewCandidate | undefined) =>
+  Boolean(candidate?.previewExists && candidate.lastPreviewRevision === candidate.revision)

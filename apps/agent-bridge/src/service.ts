@@ -1,7 +1,8 @@
-import { access } from "node:fs/promises";
+import { access, writeFile } from "node:fs/promises";
 import { posix } from "node:path";
 
-import { compileEditPlan } from "./ffmpeg.ts";
+import { compileEditPlan, type RenderProfile } from "./ffmpeg.ts";
+import { alignCaptionWords, captionsToSrt, type CaptionAlignmentOptions } from "./captions.ts";
 import { readEditPlan, writeEditPlan, writeJsonFile } from "./files.ts";
 import { inspectMedia, runProcess } from "./media.ts";
 import { getWorkspaceRoot, resolveInputPath, resolveOutputPath } from "./paths.ts";
@@ -20,6 +21,7 @@ export const capabilities = {
     "save_edit_plan",
     "compile_edit_plan",
     "render_preview",
+    "build_word_timed_captions",
     "approve_and_render_project",
   ],
   constraints: {
@@ -42,11 +44,20 @@ export type ProjectRecord = {
     approvedAt: string;
   };
   render: {
+    mode: "final";
     requestedLimitSeconds: number;
     renderedSeconds?: number;
     completedAt?: string;
     error?: string;
   };
+  provenance?: {
+    candidateId: string;
+    revision: number;
+    planSha256: string;
+    sourceHashes: Array<{ assetId: string; path: string; sha256: string }>;
+    createdBy?: { agent?: string; model?: string };
+  };
+  reviewerNote?: string;
 };
 
 const slugify = (value: string) =>
@@ -99,10 +110,24 @@ export const inspectWorkspaceMedia = async (requestedPath: string) => {
   return { path, probe: await inspectMedia(path) };
 };
 
+export const buildWordTimedCaptions = async (
+  transcript: unknown,
+  requestedOutputPath: string,
+  options: CaptionAlignmentOptions = {},
+) => {
+  if (!/\.srt$/i.test(requestedOutputPath)) throw new Error("Caption output must use the .srt extension");
+  const cues = alignCaptionWords(transcript, options);
+  const root = await getWorkspaceRoot();
+  const outputPath = await resolveOutputPath(root, requestedOutputPath);
+  await writeFile(outputPath, captionsToSrt(cues), { encoding: "utf8", flag: "wx" });
+  return { outputPath: requestedOutputPath, cues: cues.length, durationSeconds: cues.at(-1)?.end ?? 0 };
+};
+
 export const compilePlanFile = async (
   requestedPlanPath: string,
   outputOverride?: string,
-  durationLimitSeconds?: number
+  durationLimitSeconds?: number,
+  profile: RenderProfile = "preview",
 ) => {
   const root = await getWorkspaceRoot();
   const planPath = await resolveInputPath(root, requestedPlanPath);
@@ -113,7 +138,37 @@ export const compilePlanFile = async (
     durationLimitSeconds === undefined
       ? undefined
       : Math.min(MAX_PREVIEW_SECONDS, Math.max(0.1, durationLimitSeconds));
-  return compileEditPlan(plan, assets, outputPath, safeDurationLimit);
+  return compileEditPlan(plan, assets, outputPath, safeDurationLimit, profile);
+};
+
+const executeCompiledPlan = async (compiled: ReturnType<typeof compileEditPlan>, renderedSeconds: number) => {
+  const result = await runProcess(compiled.command, compiled.args, { maxOutputBytes: 4_000_000 });
+  if (result.exitCode !== 0) {
+    throw new Error(`ffmpeg failed with exit code ${result.exitCode}: ${result.stderr.trim()}`);
+  }
+  await access(compiled.outputPath);
+  return { outputPath: compiled.outputPath, renderedSeconds, ffmpegExitCode: result.exitCode };
+};
+
+export const renderPlanValue = async (
+  value: unknown,
+  requestedOutputPath: string,
+  durationSeconds = 30,
+  profile: RenderProfile = "preview",
+) => {
+  const root = await getWorkspaceRoot();
+  const { plan, durationSeconds: timelineDuration } = validatePlan(value);
+  const assets = await resolvePlanAssets(root, plan);
+  const outputPath = await resolveOutputPath(root, requestedOutputPath);
+  const safeLimit = Math.min(MAX_PREVIEW_SECONDS, Math.max(0.1, durationSeconds));
+  const compiled = compileEditPlan(
+    { ...plan, output: { path: requestedOutputPath, overwrite: true } },
+    assets,
+    outputPath,
+    safeLimit,
+    profile,
+  );
+  return executeCompiledPlan(compiled, Math.min(timelineDuration, safeLimit));
 };
 
 export const renderPlanPreview = async (
@@ -126,18 +181,10 @@ export const renderPlanPreview = async (
     outputOverride,
     durationSeconds
   );
-  const result = await runProcess(compiled.command, compiled.args, {
-    maxOutputBytes: 4_000_000,
-  });
-  if (result.exitCode !== 0) {
-    throw new Error(`ffmpeg failed with exit code ${result.exitCode}: ${result.stderr.trim()}`);
-  }
-  await access(compiled.outputPath);
-  return {
-    outputPath: compiled.outputPath,
-    renderedSeconds: Math.min(compiled.durationSeconds, durationSeconds, MAX_PREVIEW_SECONDS),
-    ffmpegExitCode: result.exitCode,
-  };
+  return executeCompiledPlan(
+    compiled,
+    Math.min(compiled.durationSeconds, durationSeconds, MAX_PREVIEW_SECONDS),
+  );
 };
 
 export const approveAndRenderProject = async (
@@ -145,6 +192,8 @@ export const approveAndRenderProject = async (
   options: {
     renderLimitSeconds?: number;
     approvalSource?: ProjectRecord["approval"]["source"];
+    provenance?: ProjectRecord["provenance"];
+    reviewerNote?: string;
   } = {}
 ) => {
   const root = await getWorkspaceRoot();
@@ -173,17 +222,19 @@ export const approveAndRenderProject = async (
       source: options.approvalSource ?? "web-review",
       approvedAt,
     },
-    render: { requestedLimitSeconds },
+    render: { mode: "final", requestedLimitSeconds },
+    provenance: options.provenance,
+    reviewerNote: options.reviewerNote,
   };
 
   await writeEditPlan(editPlanPath, plan);
   await writeJsonFile(projectRecordPath, baseRecord);
 
   try {
-    const result = await renderPlanPreview(
-      editPlanPath,
-      undefined,
-      requestedLimitSeconds
+    const compiled = await compilePlanFile(editPlanPath, undefined, requestedLimitSeconds, "final");
+    const result = await executeCompiledPlan(
+      compiled,
+      Math.min(durationSeconds, requestedLimitSeconds),
     );
     const completedAt = new Date().toISOString();
     const project: ProjectRecord = {
