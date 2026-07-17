@@ -17,6 +17,7 @@ export const candidateStatusSchema = z.enum([
   "selected",
   "previewing",
   "preview-ready",
+  "queued",
   "rendering",
   "rendered",
   "failed",
@@ -29,6 +30,8 @@ export const reviewEventTypeSchema = z.enum([
   "preview-rendered",
   "preview-failed",
   "reviewer-note-added",
+  "batch-approved",
+  "batch-completed",
   "final-approved",
   "final-rendered",
   "final-failed",
@@ -50,6 +53,22 @@ export const reviewerNoteSchema = z.object({
   revision: z.number().int().positive(),
   text: z.string().trim().min(1).max(2_000),
   createdAt: timestamp,
+});
+
+export const renderBatchItemSchema = z.object({
+  candidateId: identifier,
+  revision: z.number().int().positive(),
+  status: z.enum(["queued", "rendering", "rendered", "failed"]),
+  outputPath: z.string().min(1).optional(),
+  error: z.string().max(8_000).optional(),
+});
+
+export const renderBatchSchema = z.object({
+  id: z.string().uuid(),
+  status: z.enum(["queued", "rendering", "completed", "partial", "failed"]),
+  requestedAt: timestamp,
+  completedAt: timestamp.optional(),
+  items: z.array(renderBatchItemSchema).min(1).max(20),
 });
 
 export const reviewSessionSchema = z.object({
@@ -76,6 +95,7 @@ export const reviewSessionSchema = z.object({
   selectedCandidateId: identifier.optional(),
   reviewerNotes: z.array(reviewerNoteSchema).default([]),
   events: z.array(reviewEventSchema).default([]),
+  renderBatches: z.array(renderBatchSchema).default([]),
   createdBy: z.object({
     agent: z.string().min(1).max(120).optional(),
     model: z.string().min(1).max(160).optional(),
@@ -209,7 +229,10 @@ export class ReviewSessionRegistry {
     const session = await readReviewSession(registered.manifestPath);
     const candidate = session.candidates.find((entry) => entry.id === candidateId);
     if (!candidate) throw new Error("Unknown candidate");
-    if (candidate.status === "rendering" || candidate.status === "rendered") {
+    if (candidate.status === "queued" || candidate.status === "rendering") {
+      throw new Error("Queued or rendering candidates cannot be revised");
+    }
+    if (candidate.status === "rendered") {
       throw new Error("Rendered candidates are immutable; create a new candidate to revise them");
     }
     const planPath = await resolveInputPath(root, candidate.planPath);

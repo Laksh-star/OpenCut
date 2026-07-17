@@ -9,7 +9,14 @@ import {
   sampleEditPlan,
   movePlanClip,
   setPlanCaptionsEnabled,
+  updateAudioClip,
+  updateAudioTrack,
+  updateCaptionStyle,
+  updateDucking,
+  updateOverlayClip,
   updatePlanClip,
+  updateTitleCard,
+  updateTransition,
 } from "./edit-plan.ts"
 
 describe("edit plan review model", () => {
@@ -77,5 +84,44 @@ describe("edit plan review model", () => {
     })
     expect(getPlanTrackCounts(layered)).toEqual({ primaryClips: 2, overlayTracks: 1, overlayClips: 1, audioTracks: 1, audioClips: 1, transitions: 0, titleCards: 1, burnedCaptions: true, ducking: true })
     expect(getTimelineDuration(layered)).toBe(70)
+  })
+
+  test("revises v2 production controls through schema-backed helpers", () => {
+    const layered = parseEditPlan({
+      ...sampleEditPlan,
+      version: "2",
+      assets: [
+        ...sampleEditPlan.assets,
+        { id: "overlay", path: "media/overlay.mp4", kind: "video" },
+        { id: "music", path: "media/music.wav", kind: "audio" },
+      ],
+      timeline: {
+        ...sampleEditPlan.timeline,
+        overlayTracks: [{ id: "b-roll", clips: [{ id: "b-roll-1", assetId: "overlay", timelineStart: 3, sourceStart: 0, sourceEnd: 2, width: 640, height: 360 }] }],
+        audioTracks: [{ id: "music", role: "music", clips: [{ id: "music-1", assetId: "music", timelineStart: 0, sourceStart: 0, sourceEnd: 70 }] }],
+        transitions: [{ id: "fade-1", fromClipId: "fire-analogy", toClipId: "human-potential", type: "fade", duration: 0.5 }],
+        titleCards: [{ id: "intro", timelineStart: 0, duration: 2, title: "Opening" }],
+        captionStyle: { mode: "burn-in", preset: "clean" },
+        audioMix: { ducking: { enabled: true } },
+      },
+    })
+
+    let revised = updateOverlayClip(layered, "b-roll-1", { x: 10, opacity: 0.5, fit: "cover" })
+    revised = updateAudioTrack(revised, "music", { role: "effects" })
+    revised = updateAudioClip(revised, "music-1", { volume: 0.3, timelineStart: 1 })
+    revised = updateTransition(revised, "fade-1", { type: "wipeleft", duration: 0.3 })
+    revised = updateTitleCard(revised, "intro", { title: "New title", accentColor: "#00ff00" })
+    revised = updateCaptionStyle(revised, { preset: "bold", fontSize: 48 })
+    revised = updateDucking(revised, { ratio: 6, releaseMs: 300 })
+
+    expect(revised.version).toBe("2")
+    if (revised.version !== "2") throw new Error("Expected v2 plan")
+    expect(revised.timeline.overlayTracks[0]?.clips[0]).toMatchObject({ x: 10, opacity: 0.5, fit: "cover" })
+    expect(revised.timeline.audioTracks[0]).toMatchObject({ role: "effects" })
+    expect(revised.timeline.audioTracks[0]?.clips[0]).toMatchObject({ volume: 0.3, timelineStart: 1 })
+    expect(revised.timeline.transitions[0]).toMatchObject({ type: "wipeleft", duration: 0.3 })
+    expect(revised.timeline.titleCards[0]).toMatchObject({ title: "New title", accentColor: "#00ff00" })
+    expect(revised.timeline.captionStyle).toMatchObject({ preset: "bold", fontSize: 48 })
+    expect(revised.timeline.audioMix?.ducking).toMatchObject({ ratio: 6, releaseMs: 300, targetTrackIds: ["music"] })
   })
 })

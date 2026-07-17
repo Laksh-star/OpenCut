@@ -34,6 +34,7 @@ describe("review sessions", () => {
     process.env.OPENCUT_AGENT_ROOT = root;
     const loaded = await loadReviewSession(join(root, "review-session.json"));
     expect(loaded.candidates[0]?.outputExists).toBe(false);
+    expect(loaded.renderBatches).toEqual([]);
     const registry = new ReviewSessionRegistry();
     const registered = await registry.register("review-session.json");
     const selected = await registry.update(registered.sessionId, (session) => ({
@@ -43,6 +44,23 @@ describe("review sessions", () => {
       candidates: session.candidates.map((candidate) => ({ ...candidate, status: "selected" })),
     }));
     expect(selected.selectedCandidateId).toBe("candidate");
+  });
+
+  test("persists batch render queue metadata", async () => {
+    const root = await fixture();
+    process.env.OPENCUT_AGENT_ROOT = root;
+    const registry = new ReviewSessionRegistry();
+    const registered = await registry.register("review-session.json");
+    const queued = await registry.update(registered.sessionId, (session) => ({
+      ...session,
+      renderBatches: [{
+        id: "00000000-0000-4000-8000-000000000000",
+        status: "queued",
+        requestedAt: new Date().toISOString(),
+        items: [{ candidateId: "candidate", revision: 1, status: "queued" }],
+      }],
+    }));
+    expect(queued.renderBatches[0]?.items[0]).toMatchObject({ candidateId: "candidate", status: "queued" });
   });
 
   test("rejects candidates that render into a shared project directory", async () => {

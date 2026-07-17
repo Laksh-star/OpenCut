@@ -137,9 +137,12 @@ The bridge remains local-only and never uploads or publishes media.
 
 For v2 candidates, the review workspace identifies plan version, total layered
 clip count, overlay/audio track counts, transitions, title cards, caption
-treatment, ducking, and all video/audio/caption assets. The existing clip
-inspector continues to revise the primary A-roll; production styling and
-secondary tracks are currently agent-authored and read-only during review.
+treatment, ducking, and all video/audio/caption assets. The inspector can revise
+the primary A-roll plus existing v2 production controls: overlay timing/source
+range/canvas placement/fit/opacity/audio, audio track role/timing/source/volume,
+transition type/duration, title-card text/timing/colors, caption style, and
+smart ducking. Every change still flows through the immutable revision endpoint
+and requires a fresh preview before final approval.
 
 ## Candidate review sessions
 
@@ -196,13 +199,17 @@ selected candidate after refresh, loads only session-authorized captions,
 detects already-rendered outputs, and never asks the reviewer to select the
 multi-gigabyte source file again.
 
-Candidate selection, preview rendering, and final approval are deliberately
-separate actions. Selecting a card cannot start FFmpeg. The visible **Render
-preview** action produces a fast revision-specific file; **Approve final** stays
-locked until that exact revision has a preview. The final renderer uses a
-higher-quality profile and records an append-only audit trail. Each candidate's
-revision snapshots, previews, approved plan, project record, and final render
-stay inside that candidate's directory.
+Candidate selection, preview rendering, batch inclusion, and final approval are
+deliberately separate actions. Selecting a card cannot start FFmpeg. The visible
+**Render preview** action produces a fast revision-specific file; **Approve
+final** stays locked until that exact revision has a preview. Preview-approved
+candidates can also be added to a batch queue and rendered sequentially through
+one explicit **Approve batch** action. Batch item state is persisted as queued,
+rendering, rendered, or failed so the reviewer can poll progress and retry only
+failed candidates. The final renderer uses a higher-quality profile and records
+an append-only audit trail. Each candidate's revision snapshots, previews,
+approved plan, project record, and final render stay inside that candidate's
+directory.
 
 The HTTP surface for this workflow is:
 
@@ -215,7 +222,8 @@ The HTTP surface for this workflow is:
 - `GET /v1/review-sessions/:id/candidates/:candidateId/captions` — authorized captions;
 - `POST /v1/review-sessions/:id/render-preview` — token-gated fast preview;
 - `GET|HEAD /v1/review-sessions/:id/candidates/:candidateId/preview` — stream the authorized preview;
-- `POST /v1/review-sessions/:id/approve-and-render` — token-gated final render after preview.
+- `POST /v1/review-sessions/:id/approve-and-render` — token-gated final render after preview;
+- `POST /v1/review-sessions/:id/approve-batch` — token-gated sequential final render for preview-approved candidates.
 
 Session IDs are process-local: restarting the bridge creates a new short URL,
-while the manifest's selected/rendered state remains on disk.
+while the manifest's selected, batch, and rendered state remains on disk.

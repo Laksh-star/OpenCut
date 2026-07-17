@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -47,6 +48,14 @@ const previewSessionCandidateSchema = z.object({
 });
 const approveSessionCandidateSchema = z.object({
   candidateId: z.string().min(1),
+  approvalToken: z.string().uuid(),
+  renderLimitSeconds: z.number().min(0.1).max(300).default(300),
+});
+const approveSessionBatchSchema = z.object({
+  candidateIds: z.array(z.string().min(1)).min(1).max(20).refine(
+    (ids) => new Set(ids).size === ids.length,
+    "candidateIds must be unique",
+  ),
   approvalToken: z.string().uuid(),
   renderLimitSeconds: z.number().min(0.1).max(300).default(300),
 });
@@ -193,13 +202,14 @@ const server = createServer(async (request, response) => {
       const input = selectCandidateSchema.parse(await readJsonBody(request));
       const loaded = await registry.load(selectRoute[0]!);
       if (!loaded.candidates.some((candidate) => candidate.id === input.candidateId)) throw new Error("Unknown candidate");
+      const lockedStatuses = new Set(["queued", "rendering", "rendered"]);
       const updated = await registry.update(selectRoute[0]!, (session) => ({
         ...session,
         selectedCandidateId: input.candidateId,
         updatedAt: new Date().toISOString(),
         candidates: session.candidates.map((candidate) => ({
           ...candidate,
-          status: candidate.id === input.candidateId && candidate.status !== "rendered"
+          status: candidate.id === input.candidateId && !lockedStatuses.has(candidate.status)
             ? candidate.lastPreviewRevision === candidate.revision ? "preview-ready" : "selected"
             : candidate.status === "selected" ? "ready-for-review" : candidate.status,
         })),
@@ -289,6 +299,7 @@ const server = createServer(async (request, response) => {
       const candidate = loaded.candidates.find((entry) => entry.id === input.candidateId);
       if (!candidate) throw new Error("Unknown candidate");
       if (candidate.outputExists || candidate.status === "rendered") throw new Error("Rendered candidates are immutable");
+      if (candidate.status === "queued" || candidate.status === "rendering") throw new Error("Queued or rendering candidates cannot be previewed");
       const previewOutputPath = posix.join(
         posix.dirname(candidate.planPath), "renders", `preview-r${candidate.revision}.mp4`,
       );
@@ -359,6 +370,7 @@ const server = createServer(async (request, response) => {
       const candidate = loaded.candidates.find((entry) => entry.id === input.candidateId);
       if (!candidate) throw new Error("Unknown candidate");
       if (candidate.outputExists || candidate.status === "rendered") throw new Error("Candidate is already rendered");
+      if (candidate.status === "queued" || candidate.status === "rendering") throw new Error("Candidate is already in a render queue");
       if (!candidate.previewExists || candidate.lastPreviewRevision !== candidate.revision) {
         throw new Error("Render a preview of the current revision before final approval");
       }
@@ -401,6 +413,154 @@ const server = createServer(async (request, response) => {
           })],
         }));
         throw error;
+      } finally {
+        approvalInProgress = false;
+      }
+      return;
+    }
+
+    const approveBatchRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/approve-batch$/);
+    if (request.method === "POST" && approveBatchRoute) {
+      if (approvalInProgress) {
+        sendJson(request, response, 409, { error: "Another approval render is already in progress" });
+        return;
+      }
+      const input = approveSessionBatchSchema.parse(await readJsonBody(request));
+      const registered = registry.get(approveBatchRoute[0]!);
+      if (registered.approvalToken !== input.approvalToken) {
+        sendJson(request, response, 403, { error: "Invalid review approval token" });
+        return;
+      }
+      const loaded = await registry.load(approveBatchRoute[0]!);
+      const candidates = input.candidateIds.map((candidateId) => {
+        const candidate = loaded.candidates.find((entry) => entry.id === candidateId);
+        if (!candidate) throw new Error(`Unknown candidate: ${candidateId}`);
+        if (candidate.outputExists || candidate.status === "rendered") throw new Error(`Candidate ${candidateId} is already rendered`);
+        if (candidate.status === "queued" || candidate.status === "rendering") throw new Error(`Candidate ${candidateId} is already in a render queue`);
+        if (!candidate.previewExists || candidate.lastPreviewRevision !== candidate.revision) {
+          throw new Error(`Render a preview of candidate ${candidateId} revision ${candidate.revision} before batch approval`);
+        }
+        return candidate;
+      });
+      const batchId = randomUUID();
+      const requestedAt = new Date().toISOString();
+      const results: Array<{ candidateId: string; status: "rendered" | "failed"; outputPath?: string; error?: string }> = [];
+      approvalInProgress = true;
+      await registry.update(approveBatchRoute[0]!, (session) => ({
+        ...session,
+        updatedAt: new Date().toISOString(),
+        candidates: session.candidates.map((entry) => candidates.some((candidate) => candidate.id === entry.id)
+          ? { ...entry, status: "queued", error: undefined }
+          : entry),
+        renderBatches: [...session.renderBatches, {
+          id: batchId,
+          status: "queued",
+          requestedAt,
+          items: candidates.map((candidate) => ({
+            candidateId: candidate.id,
+            revision: candidate.revision,
+            status: "queued",
+          })),
+        }],
+        events: [...session.events, createReviewEvent("batch-approved", {
+          actor: "reviewer",
+          detail: `${batchId}: ${candidates.length} candidates`,
+        })],
+      }));
+      try {
+        for (const candidate of candidates) {
+          await registry.update(approveBatchRoute[0]!, (session) => ({
+            ...session,
+            updatedAt: new Date().toISOString(),
+            candidates: session.candidates.map((entry) => entry.id === candidate.id
+              ? { ...entry, status: "rendering", error: undefined }
+              : entry),
+            renderBatches: session.renderBatches.map((batch) => batch.id === batchId ? {
+              ...batch,
+              status: "rendering",
+              items: batch.items.map((item) => item.candidateId === candidate.id
+                ? { ...item, status: "rendering" }
+                : item),
+            } : batch),
+            events: [...session.events, createReviewEvent("final-approved", {
+              actor: "reviewer",
+              candidateId: candidate.id,
+              revision: candidate.revision,
+              detail: `Batch ${batchId}`,
+            })],
+          }));
+          try {
+            const provenance = await registry.provenance(approveBatchRoute[0]!, candidate.id);
+            const latestNote = loaded.reviewerNotes.filter((note) => note.candidateId === candidate.id).at(-1)?.text;
+            await approveAndRenderProject(candidate.plan, {
+              renderLimitSeconds: input.renderLimitSeconds,
+              approvalSource: "web-review",
+              provenance,
+              reviewerNote: latestNote,
+            });
+            results.push({ candidateId: candidate.id, status: "rendered", outputPath: candidate.plan.output.path });
+            await registry.update(approveBatchRoute[0]!, (session) => ({
+              ...session,
+              updatedAt: new Date().toISOString(),
+              candidates: session.candidates.map((entry) => entry.id === candidate.id
+                ? { ...entry, status: "rendered", error: undefined }
+                : entry),
+              renderBatches: session.renderBatches.map((batch) => batch.id === batchId ? {
+                ...batch,
+                items: batch.items.map((item) => item.candidateId === candidate.id
+                  ? { ...item, status: "rendered", outputPath: candidate.plan.output.path, error: undefined }
+                  : item),
+              } : batch),
+              events: [...session.events, createReviewEvent("final-rendered", {
+                actor: "system",
+                candidateId: candidate.id,
+                revision: candidate.revision,
+                detail: `Batch ${batchId}: ${candidate.plan.output.path}`,
+              })],
+            }));
+          } catch (error) {
+            const message = (error instanceof Error ? error.message : String(error)).slice(-8_000);
+            results.push({ candidateId: candidate.id, status: "failed", error: message });
+            await registry.update(approveBatchRoute[0]!, (session) => ({
+              ...session,
+              updatedAt: new Date().toISOString(),
+              candidates: session.candidates.map((entry) => entry.id === candidate.id
+                ? { ...entry, status: "failed", error: message }
+                : entry),
+              renderBatches: session.renderBatches.map((batch) => batch.id === batchId ? {
+                ...batch,
+                items: batch.items.map((item) => item.candidateId === candidate.id
+                  ? { ...item, status: "failed", error: message }
+                  : item),
+              } : batch),
+              events: [...session.events, createReviewEvent("final-failed", {
+                actor: "system",
+                candidateId: candidate.id,
+                revision: candidate.revision,
+                detail: message,
+              })],
+            }));
+          }
+        }
+        const finalStatus = results.every((result) => result.status === "rendered")
+          ? "completed"
+          : results.every((result) => result.status === "failed")
+            ? "failed"
+            : "partial";
+        const updated = await registry.update(approveBatchRoute[0]!, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          renderBatches: session.renderBatches.map((batch) => batch.id === batchId ? {
+            ...batch,
+            status: finalStatus,
+            completedAt: new Date().toISOString(),
+          } : batch),
+          events: [...session.events, createReviewEvent("batch-completed", {
+            actor: "system",
+            detail: `${batchId}: ${finalStatus}`,
+          })],
+        }));
+        sendJson(request, response, 200, { batchId, status: finalStatus, results, session: updated });
       } finally {
         approvalInProgress = false;
       }

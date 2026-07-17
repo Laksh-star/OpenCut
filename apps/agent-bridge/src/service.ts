@@ -13,7 +13,7 @@ const MAX_PREVIEW_SECONDS = 300;
 
 export const capabilities = {
   server: "opencut-agent-bridge",
-  version: "0.4.0",
+  version: "0.5.0",
   adapter: "ffmpeg-production-graph",
   editorApiConnected: false,
   operations: [
@@ -25,6 +25,7 @@ export const capabilities = {
     "render_preview",
     "build_word_timed_captions",
     "approve_and_render_project",
+    "approve_review_batch",
   ],
   constraints: {
     schemaVersions: ["1", "2"],
@@ -36,6 +37,8 @@ export const capabilities = {
     burnedInCaptions: true,
     transitions: true,
     titleCards: true,
+    batchRendering: true,
+    productionLayerEditing: true,
     publishing: false,
     workspaceRestricted: true,
   },

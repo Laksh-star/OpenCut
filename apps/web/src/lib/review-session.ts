@@ -5,6 +5,7 @@ export type CandidateStatus =
   | "selected"
   | "previewing"
   | "preview-ready"
+  | "queued"
   | "rendering"
   | "rendered"
   | "failed"
@@ -40,6 +41,20 @@ export type ReviewEvent = {
   actor: "reviewer" | "agent" | "system"
   detail?: string
 }
+export type RenderBatchItem = {
+  candidateId: string
+  revision: number
+  status: "queued" | "rendering" | "rendered" | "failed"
+  outputPath?: string
+  error?: string
+}
+export type RenderBatch = {
+  id: string
+  status: "queued" | "rendering" | "completed" | "partial" | "failed"
+  requestedAt: string
+  completedAt?: string
+  items: RenderBatchItem[]
+}
 export type ReviewSession = {
   version: "1"
   id: string
@@ -49,6 +64,7 @@ export type ReviewSession = {
   selectedCandidateId?: string
   reviewerNotes: ReviewerNote[]
   events: ReviewEvent[]
+  renderBatches: RenderBatch[]
   createdBy?: { agent?: string; model?: string }
   updatedAt: string
   approvalToken: string

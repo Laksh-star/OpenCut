@@ -4,6 +4,14 @@ import {
 } from "../../../agent-bridge/src/schema.ts"
 
 export type { EditPlan }
+export type EditPlanV2 = Extract<EditPlan, { version: "2" }>
+export type OverlayClip = EditPlanV2["timeline"]["overlayTracks"][number]["clips"][number]
+export type AudioTrack = EditPlanV2["timeline"]["audioTracks"][number]
+export type AudioClip = AudioTrack["clips"][number]
+export type Transition = EditPlanV2["timeline"]["transitions"][number]
+export type TitleCard = EditPlanV2["timeline"]["titleCards"][number]
+export type CaptionStyle = NonNullable<EditPlanV2["timeline"]["captionStyle"]>
+export type DuckingSettings = NonNullable<NonNullable<EditPlanV2["timeline"]["audioMix"]>["ducking"]>
 
 export type TimelineSegment = {
   clip: EditPlan["timeline"]["clips"][number]
@@ -123,6 +131,144 @@ export function updatePlanClip(
     timeline: {
       ...plan.timeline,
       clips: plan.timeline.clips.map((clip) => clip.id === clipId ? { ...clip, ...patch } : clip),
+    },
+  })
+}
+
+export function updateOverlayClip(
+  plan: EditPlan,
+  clipId: string,
+  patch: Partial<OverlayClip>,
+): EditPlan {
+  if (plan.version !== "2") return plan
+  return parseEditPlan({
+    ...plan,
+    timeline: {
+      ...plan.timeline,
+      overlayTracks: plan.timeline.overlayTracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => clip.id === clipId ? { ...clip, ...patch } : clip),
+      })),
+    },
+  })
+}
+
+export function updateAudioTrack(
+  plan: EditPlan,
+  trackId: string,
+  patch: Partial<Pick<AudioTrack, "role">>,
+): EditPlan {
+  if (plan.version !== "2") return plan
+  const next = {
+    ...plan,
+    timeline: {
+      ...plan.timeline,
+      audioTracks: plan.timeline.audioTracks.map((track) => track.id === trackId ? { ...track, ...patch } : track),
+    },
+  }
+  const ducking = next.timeline.audioMix?.ducking
+  if (ducking?.enabled && ducking.targetTrackIds.length === 0 && !next.timeline.audioTracks.some((track) => track.role === "music")) {
+    ducking.targetTrackIds = [trackId]
+  }
+  return parseEditPlan(next)
+}
+
+export function updateAudioClip(
+  plan: EditPlan,
+  clipId: string,
+  patch: Partial<AudioClip>,
+): EditPlan {
+  if (plan.version !== "2") return plan
+  return parseEditPlan({
+    ...plan,
+    timeline: {
+      ...plan.timeline,
+      audioTracks: plan.timeline.audioTracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => clip.id === clipId ? { ...clip, ...patch } : clip),
+      })),
+    },
+  })
+}
+
+export function updateTransition(
+  plan: EditPlan,
+  transitionId: string,
+  patch: Partial<Transition>,
+): EditPlan {
+  if (plan.version !== "2") return plan
+  return parseEditPlan({
+    ...plan,
+    timeline: {
+      ...plan.timeline,
+      transitions: plan.timeline.transitions.map((transition) =>
+        transition.id === transitionId ? { ...transition, ...patch } : transition,
+      ),
+    },
+  })
+}
+
+export function updateTitleCard(
+  plan: EditPlan,
+  titleId: string,
+  patch: Partial<TitleCard>,
+): EditPlan {
+  if (plan.version !== "2") return plan
+  return parseEditPlan({
+    ...plan,
+    timeline: {
+      ...plan.timeline,
+      titleCards: plan.timeline.titleCards.map((title) =>
+        title.id === titleId ? { ...title, ...patch } : title,
+      ),
+    },
+  })
+}
+
+export function updateCaptionStyle(
+  plan: EditPlan,
+  patch: Partial<CaptionStyle>,
+): EditPlan {
+  if (plan.version !== "2") return plan
+  const current = plan.timeline.captionStyle ?? { mode: "burn-in" as const, preset: "clean" as const }
+  return parseEditPlan({
+    ...plan,
+    timeline: {
+      ...plan.timeline,
+      captionStyle: { ...current, ...patch },
+    },
+  })
+}
+
+export function updateDucking(
+  plan: EditPlan,
+  patch: Partial<DuckingSettings>,
+): EditPlan {
+  if (plan.version !== "2") return plan
+  const targetTrackIds = plan.timeline.audioMix?.ducking?.targetTrackIds
+    ?? plan.timeline.audioTracks.filter((track) => track.role === "music").map((track) => track.id)
+    ?? []
+  const current = plan.timeline.audioMix?.ducking ?? {
+    enabled: false,
+    targetTrackIds: targetTrackIds.length > 0 ? targetTrackIds : plan.timeline.audioTracks.slice(0, 1).map((track) => track.id),
+    threshold: 0.04,
+    ratio: 8,
+    attackMs: 20,
+    releaseMs: 250,
+  }
+  const nextDucking = { ...current, ...patch }
+  if (nextDucking.enabled && nextDucking.targetTrackIds.length === 0) {
+    nextDucking.targetTrackIds = plan.timeline.audioTracks.filter((track) => track.role === "music").map((track) => track.id)
+    if (nextDucking.targetTrackIds.length === 0) nextDucking.targetTrackIds = plan.timeline.audioTracks.slice(0, 1).map((track) => track.id)
+  }
+  return parseEditPlan({
+    ...plan,
+    timeline: {
+      ...plan.timeline,
+      audioMix: {
+        ...(plan.timeline.audioMix ?? {}),
+        ducking: nextDucking,
+      },
     },
   })
 }

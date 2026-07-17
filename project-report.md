@@ -238,6 +238,35 @@ The fork now supports a complete candidate-review session rather than a long
 The legacy single-plan import path remains available for compatibility, but the
 session flow is now the recommended operational path for large real videos.
 
+### 4.8 Batch approval and editable production controls
+
+The review session has been extended from single-candidate final approval to a
+small production queue:
+
+- preview-approved candidates can be added to a separate batch selection without
+  changing the active review selection;
+- the reviewer must press **Approve batch** before any final renders start;
+- the bridge renders candidates sequentially under the existing local render
+  lock;
+- each batch item persists `queued`, `rendering`, `rendered`, or `failed` state
+  inside `review-session.json`;
+- the batch itself persists `queued`, `rendering`, `completed`, `partial`, or
+  `failed` state and can be polled through the regular session endpoint;
+- failed candidates can be reselected for a retry without rerendering successful
+  items;
+- batch approval, per-candidate final approval/render/failure, and batch
+  completion are appended to the audit trail.
+
+The v2 review inspector is also no longer read-only for production layers. It
+now exposes form controls for the existing renderer-backed fields: overlay
+timing, source range, canvas position/size, opacity, fit, and overlay audio;
+audio track role, clip timing, source range, and volume; transition type and
+duration; title-card template, text, timing, and colors; caption mode, preset,
+alignment, font size, colors, margins, and background opacity; and smart audio
+ducking enablement, threshold, ratio, attack, and release. These edits still
+save through the immutable revision endpoint and invalidate the previous
+preview before final approval can proceed.
+
 ## 5. Real-video demonstration completed
 
 ### 5.1 Source and transcription
@@ -317,18 +346,19 @@ The following checks were rerun on 17 July 2026 using the repo-pinned Bun 1.3.11
 
 | Check | Result |
 | --- | --- |
-| Agent bridge unit tests | **Pass:** 27 tests across v1/v2 schema migration, overlays, ducked audio, transitions, production graphics, setup packaging, FFmpeg profiles, timed-caption grouping, byte ranges, path security, project paths, immutable revisions, review events, and candidate isolation. |
+| Agent bridge unit tests | **Pass:** 28 tests across v1/v2 schema migration, overlays, ducked audio, transitions, production graphics, setup packaging, FFmpeg profiles, timed-caption grouping, byte ranges, path security, project paths, immutable revisions, review events, candidate isolation, and batch metadata persistence. |
 | Agent bridge TypeScript check | **Pass:** `tsc --noEmit`. |
 | Approval/render smoke | **Pass:** approved plan and project record persisted; 2-second generated-media MP4 rendered. |
 | FFmpeg render smoke | **Pass:** 2-second MP4 rendered; FFmpeg exited successfully. |
-| Review-session HTTP smoke | **Pass:** opaque registration, authorized 100-byte range, session captions, selection, revision-specific preview, final approval/render, SHA-256 provenance, and persisted state. |
-| Web model tests | **Pass:** 9 tests covering shared-schema parsing, layered track summaries, timeline editing/reordering, captions, preview gates, and session helpers. |
+| Review-session HTTP smoke | **Pass:** opaque registration, authorized 100-byte range, session captions, two candidate selections, two revision-specific previews, one explicit batch approval, two final renders, SHA-256 provenance, persisted batch state, and audit events. |
+| Web model tests | **Pass:** 10 tests covering shared-schema parsing, layered track summaries, timeline editing/reordering, v2 production-control helpers, captions, preview gates, and session helpers. |
 | Web production build | **Pass:** Vite client and server builds completed. |
-| Browser workflow | **Pass:** the production candidate visibly reported one transition, two title cards, styled captions, and smart ducking; selection enabled preview, the exact revision rendered to preview-ready, final approval unlocked, and browser logs contained zero warnings/errors. Earlier revision/final-render checks also remain covered by the HTTP smoke. |
+| Browser workflow | **Pass:** a local v2 review session displayed editable overlay, audio mix, transition, title-card, caption-style, and ducking controls; both preview-ready candidates were added to the batch queue; **Approve batch** rendered both candidates to `rendered`; browser logs contained zero warnings/errors. |
 | Production render smoke | **Pass:** generated A-roll, B-roll, music, SRT captions, a crossfade, intro/outro cards, burned captions, selectable captions, and speech-keyed ducking produced a 4.5-second H.264/AAC/`mov_text` MP4; five extracted frames visually confirmed the title and caption overlays. |
 | Setup packager smoke | **Pass:** workspace-scoped environment, Codex MCP TOML, and setup manifest generated; escaping output rejected. |
 | Real output inspection | **Pass:** FFprobe confirmed the expected video, audio, subtitle, duration, resolution, and frame rate. |
-| MCP tool-list smoke | **Pass:** all nine tools are listed and the capability call succeeds. |
+| MCP tool-list smoke | **Pass:** all nine MCP tools are listed, `opencut_capabilities` reports bridge version `0.5.0`, and capability flags include batch rendering plus production-layer editing. |
+| Reusable skill validation | **Pass:** `opencut-producer` skill metadata validates; bundled session validator accepts queued candidates and render-batch metadata using a synthetic fixture. |
 
 ## 9. What each component is responsible for
 
@@ -346,10 +376,10 @@ The following checks were rerun on 17 July 2026 using the repo-pinned Bun 1.3.11
 
 - presents the agent's plan in an editor-like visual context;
 - lets the human attach and review local source video;
-- exposes and edits exact source ranges, order, speed, volume, captions, and timeline behavior;
+- exposes and edits exact source ranges, order, speed, volume, captions, timeline behavior, and existing v2 production controls;
 - preserves numbered revisions, reviewer notes, and the audit trail;
 - requires a successful preview for the current revision before final approval;
-- provides the explicit approval boundary;
+- provides explicit single-final and batch approval boundaries;
 - reports bridge and render state.
 
 ### Agent bridge
@@ -360,7 +390,7 @@ The following checks were rerun on 17 July 2026 using the repo-pinned Bun 1.3.11
 - compiles deterministic renderer arguments;
 - derives speaker-aware SRT cues from timed words;
 - records plan/source hashes and agent metadata without storing credentials;
-- connects the approved UI action to local execution.
+- connects approved single or batch UI actions to local execution.
 
 ### FFmpeg / FFprobe
 

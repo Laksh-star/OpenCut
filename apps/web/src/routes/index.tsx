@@ -40,7 +40,14 @@ import {
   parseEditPlan,
   sampleEditPlan,
   setPlanCaptionsEnabled,
+  updateAudioClip,
+  updateAudioTrack,
+  updateCaptionStyle,
+  updateDucking,
+  updateOverlayClip,
   updatePlanClip,
+  updateTitleCard,
+  updateTransition,
   type EditPlan,
   type TimelineSegment,
 } from "#/lib/edit-plan.ts"
@@ -48,6 +55,7 @@ import {
   candidateHasCurrentPreview,
   candidateForSelection,
   mediaAssetForPlan,
+  type RenderBatch,
   type ReviewCandidate,
   type ReviewSession,
 } from "#/lib/review-session.ts"
@@ -64,6 +72,13 @@ type ApprovalResult = {
   renderedSeconds: number
 }
 
+type BatchApprovalResult = {
+  batchId: string
+  status: RenderBatch["status"]
+  results: Array<{ candidateId: string; status: "rendered" | "failed"; outputPath?: string; error?: string }>
+  session: ReviewSession
+}
+
 const bridgeUrl = (
   import.meta.env.VITE_OPENCUT_BRIDGE_URL ?? "http://127.0.0.1:3210"
 ).replace(/\/$/, "")
@@ -73,9 +88,17 @@ function AgentReviewWorkspace() {
   const [selectedClipId, setSelectedClipId] = useState(
     sampleEditPlan.timeline.clips[0]?.id ?? "",
   )
+  const [selectedOverlayClipId, setSelectedOverlayClipId] = useState("")
+  const [selectedAudioTrackId, setSelectedAudioTrackId] = useState("")
+  const [selectedAudioClipId, setSelectedAudioClipId] = useState("")
+  const [selectedTransitionId, setSelectedTransitionId] = useState("")
+  const [selectedTitleCardId, setSelectedTitleCardId] = useState("")
   const [reviewState, setReviewState] = useState<ReviewState>("review")
   const [approvalResult, setApprovalResult] = useState<ApprovalResult | null>(null)
   const [approvalError, setApprovalError] = useState<string | null>(null)
+  const [batchCandidateIds, setBatchCandidateIds] = useState<string[]>([])
+  const [batchRendering, setBatchRendering] = useState(false)
+  const [batchError, setBatchError] = useState<string | null>(null)
   const [bridgeOnline, setBridgeOnline] = useState<boolean | null>(null)
   const [planError, setPlanError] = useState<string | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
@@ -138,6 +161,26 @@ function AgentReviewWorkspace() {
   const previewUrl = reviewSession && sessionId && activeCandidate && hasCurrentPreview
     ? `${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/candidates/${encodeURIComponent(activeCandidate.id)}/preview`
     : null
+  const latestBatch = reviewSession?.renderBatches.at(-1)
+  const latestBatchActive = latestBatch?.status === "queued" || latestBatch?.status === "rendering"
+  const interactionLocked = reviewState === "saving" || reviewState === "previewing" || reviewState === "rendering" || batchRendering || latestBatchActive
+  const canEditPlan = Boolean(
+    reviewSession &&
+    activeCandidate &&
+    !interactionLocked &&
+    reviewState !== "rendered" &&
+    activeCandidate.status !== "queued" &&
+    activeCandidate.status !== "rendering" &&
+    !activeCandidate.outputExists,
+  )
+
+  useEffect(() => {
+    if (!reviewSession) return
+    setBatchCandidateIds((ids) => ids.filter((id) => {
+      const candidate = reviewSession.candidates.find((entry) => entry.id === id)
+      return candidate ? canBatchRenderCandidate(candidate) : false
+    }))
+  }, [reviewSession])
 
   useEffect(() => {
     return () => {
@@ -200,13 +243,14 @@ function AgentReviewWorkspace() {
     setActiveReviewCandidateId(candidate.id)
     setPlan(candidate.plan)
     setSelectedClipId(candidate.plan.timeline.clips[0]?.id ?? "")
+    resetProductionSelections(candidate.plan)
     setCurrentSourceTime(candidate.plan.timeline.clips[0]?.sourceStart ?? 0)
     setReviewState(
       candidate.status === "rendered" || candidate.outputExists
         ? "rendered"
         : candidate.status === "failed"
           ? "failed"
-          : candidate.status === "rendering"
+          : candidate.status === "queued" || candidate.status === "rendering"
             ? "rendering"
             : candidate.status === "previewing"
               ? "previewing"
@@ -247,7 +291,7 @@ function AgentReviewWorkspace() {
   }
 
   function reviseSelectedClip(patch: Partial<EditPlan["timeline"]["clips"][number]>) {
-    if (!selectedSegment || reviewState === "rendered" || reviewState === "rendering") return
+    if (!selectedSegment || !canEditPlan) return
     try {
       setPlan(updatePlanClip(plan, selectedSegment.clip.id, patch))
       setPlanError(null)
@@ -257,7 +301,7 @@ function AgentReviewWorkspace() {
   }
 
   async function saveRevision() {
-    if (!reviewSession || !activeCandidate || !planIsDirty) return
+    if (!reviewSession || !activeCandidate || !planIsDirty || interactionLocked) return
     setReviewState("saving")
     setSessionError(null)
     try {
@@ -278,7 +322,7 @@ function AgentReviewWorkspace() {
   }
 
   async function renderPreview() {
-    if (!reviewSession || !activeCandidate || planIsDirty || reviewState === "previewing") return
+    if (!reviewSession || !activeCandidate || planIsDirty || interactionLocked) return
     setReviewState("previewing")
     setApprovalError(null)
     try {
@@ -369,6 +413,7 @@ function AgentReviewWorkspace() {
       const importedPlan = parseEditPlan(JSON.parse(await file.text()))
       setPlan(importedPlan)
       setSelectedClipId(importedPlan.timeline.clips[0]?.id ?? "")
+      resetProductionSelections(importedPlan)
       setCurrentSourceTime(importedPlan.timeline.clips[0]?.sourceStart ?? 0)
       setReviewState("review")
       setApprovalResult(null)
@@ -386,6 +431,107 @@ function AgentReviewWorkspace() {
     setVideoName(file.name)
     setCurrentSourceTime(selectedSegment?.clip.sourceStart ?? 0)
     setIsPlaying(false)
+  }
+
+  function resetProductionSelections(nextPlan: EditPlan) {
+    if (nextPlan.version !== "2") {
+      setSelectedOverlayClipId("")
+      setSelectedAudioTrackId("")
+      setSelectedAudioClipId("")
+      setSelectedTransitionId("")
+      setSelectedTitleCardId("")
+      return
+    }
+    setSelectedOverlayClipId(nextPlan.timeline.overlayTracks[0]?.clips[0]?.id ?? "")
+    setSelectedAudioTrackId(nextPlan.timeline.audioTracks[0]?.id ?? "")
+    setSelectedAudioClipId(nextPlan.timeline.audioTracks[0]?.clips[0]?.id ?? "")
+    setSelectedTransitionId(nextPlan.timeline.transitions[0]?.id ?? "")
+    setSelectedTitleCardId(nextPlan.timeline.titleCards[0]?.id ?? "")
+  }
+
+  function reviseProductionPlan(edit: (current: EditPlan) => EditPlan) {
+    if (!canEditPlan) return
+    try {
+      setPlan(edit(plan))
+      setPlanError(null)
+    } catch (error) {
+      setPlanError(error instanceof Error ? error.message : "Invalid production revision")
+    }
+  }
+
+  function toggleBatchCandidate(candidateId: string) {
+    const candidate = reviewSession?.candidates.find((entry) => entry.id === candidateId)
+    if (!candidate || !canBatchRenderCandidate(candidate) || batchRendering || latestBatchActive) return
+    setBatchCandidateIds((ids) => ids.includes(candidateId)
+      ? ids.filter((id) => id !== candidateId)
+      : [...ids, candidateId])
+    setBatchError(null)
+  }
+
+  function selectFailedBatchCandidates() {
+    if (!reviewSession || !latestBatch || (latestBatch.status !== "failed" && latestBatch.status !== "partial")) return
+    const failedIds = latestBatch.items
+      .filter((item) => item.status === "failed")
+      .map((item) => item.candidateId)
+      .filter((candidateId) => {
+        const candidate = reviewSession.candidates.find((entry) => entry.id === candidateId)
+        return candidate ? canBatchRenderCandidate(candidate) : false
+      })
+    setBatchCandidateIds(failedIds)
+    setBatchError(null)
+  }
+
+  async function pollReviewSession(currentSessionId: string) {
+    const response = await fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(currentSessionId)}`)
+    const payload = (await response.json()) as ReviewSession & { error?: string }
+    if (!response.ok) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+    setReviewSession(payload)
+    const candidate = activeReviewCandidateId
+      ? payload.candidates.find((entry) => entry.id === activeReviewCandidateId)
+      : candidateForSelection(payload)
+    if (candidate && !planIsDirty) applyReviewCandidate(payload, candidate)
+  }
+
+  async function approveBatch() {
+    if (!reviewSession || batchCandidateIds.length === 0 || batchRendering || latestBatchActive) return
+    setBatchRendering(true)
+    setBatchError(null)
+    setApprovalResult(null)
+    const currentSessionId = new URLSearchParams(window.location.search).get("session") ?? ""
+    let pollTimer: number | null = window.setInterval(() => {
+      void pollReviewSession(currentSessionId).catch(() => undefined)
+    }, 800)
+    try {
+      const response = await fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(currentSessionId)}/approve-batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          candidateIds: batchCandidateIds,
+          approvalToken: reviewSession.approvalToken,
+          renderLimitSeconds: 300,
+        }),
+      })
+      const payload = (await response.json()) as BatchApprovalResult & { error?: string }
+      if (!response.ok || !payload.session) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+      setReviewSession(payload.session)
+      setBatchCandidateIds((ids) => ids.filter((id) => !payload.results.some((result) => result.candidateId === id && result.status === "rendered")))
+      const candidate = activeReviewCandidateId
+        ? payload.session.candidates.find((entry) => entry.id === activeReviewCandidateId)
+        : candidateForSelection(payload.session)
+      if (candidate) applyReviewCandidate(payload.session, candidate)
+      if (payload.status === "failed" || payload.status === "partial") {
+        const failed = payload.results.filter((result) => result.status === "failed").map((result) => result.candidateId).join(", ")
+        setBatchError(`Batch ${payload.status}. Failed candidates: ${failed || "none"}`)
+      }
+    } catch (error) {
+      setBatchError(error instanceof Error ? error.message : "Could not approve this batch")
+    } finally {
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer)
+        pollTimer = null
+      }
+      setBatchRendering(false)
+    }
   }
 
   function selectSegment(segment: TimelineSegment) {
@@ -455,7 +601,7 @@ function AgentReviewWorkspace() {
   }
 
   async function approveAndRender() {
-    if (reviewState === "rendering" || reviewState === "rendered") return
+    if (reviewState === "rendering" || reviewState === "rendered" || batchRendering || latestBatchActive) return
 
     let bridgeResponded = false
     setReviewState("rendering")
@@ -597,9 +743,7 @@ function AgentReviewWorkspace() {
               disabled={
                 !reviewSession.selectedCandidateId ||
                 planIsDirty ||
-                reviewState === "saving" ||
-                reviewState === "previewing" ||
-                reviewState === "rendering" ||
+                interactionLocked ||
                 reviewState === "rendered"
               }
               onClick={() => void renderPreview()}
@@ -620,6 +764,8 @@ function AgentReviewWorkspace() {
               reviewState === "saving" ||
               reviewState === "previewing" ||
               reviewState === "rendering" ||
+              batchRendering ||
+              latestBatchActive ||
               reviewState === "rendered" ||
               Boolean(reviewSession && (!reviewSession.selectedCandidateId || planIsDirty || !hasCurrentPreview))
             }
@@ -659,26 +805,98 @@ function AgentReviewWorkspace() {
               const selected = candidate.id === reviewSession.selectedCandidateId
               const rendered = candidate.status === "rendered" || candidate.outputExists
               const previewReady = candidateHasCurrentPreview(candidate)
+              const queued = candidate.status === "queued"
+              const rendering = candidate.status === "rendering"
+              const failed = candidate.status === "failed"
+              const batchSelected = batchCandidateIds.includes(candidate.id)
+              const canBatchRender = canBatchRenderCandidate(candidate) && !batchRendering && !latestBatchActive
               const candidateTracks = getPlanTrackCounts(candidate.plan)
               return (
-                <button
+                <div
                   key={candidate.id}
                   className={`rounded-lg border p-3 text-left transition ${selected ? "border-amber-300/70 bg-amber-300/10" : "border-white/10 bg-white/[0.025] hover:border-white/25"}`}
-                  onClick={() => void selectReviewCandidate(candidate.id)}
-                  aria-pressed={selected}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-xs font-medium text-zinc-100">{candidate.title}</span>
-                    <span className={`rounded-full px-2 py-0.5 text-[9px] ${rendered ? "bg-emerald-400/15 text-emerald-300" : previewReady ? "bg-sky-400/15 text-sky-300" : selected ? "bg-amber-300/15 text-amber-200" : "bg-white/5 text-zinc-500"}`}>
-                      {rendered ? "Final" : previewReady ? "Preview ready" : selected ? "Selected" : "Ready"}
-                    </span>
-                  </div>
-                  <p className="mt-1.5 line-clamp-2 text-[10px] leading-relaxed text-zinc-500">{candidate.summary || "Agent-proposed edit"}</p>
-                  <p className="mt-2 font-mono text-[9px] text-zinc-600">r{candidate.revision} · {formatTimecode(getTimelineDuration(candidate.plan))} · {candidateTracks.primaryClips + candidateTracks.overlayClips + candidateTracks.audioClips} clips · v{candidate.plan.version}</p>
-                  {candidate.plan.version === "2" ? <p className="mt-1 text-[9px] text-zinc-600">{candidateTracks.transitions} transitions · {candidateTracks.titleCards} titles · {candidateTracks.burnedCaptions ? "styled captions" : "selectable captions"}{candidateTracks.ducking ? " · ducking" : ""}</p> : null}
-                </button>
+                  <button
+                    className="block w-full text-left"
+                    onClick={() => void selectReviewCandidate(candidate.id)}
+                    aria-pressed={selected}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-xs font-medium text-zinc-100">{candidate.title}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[9px] ${
+                        rendered ? "bg-emerald-400/15 text-emerald-300"
+                          : rendering || queued ? "bg-amber-300/15 text-amber-200"
+                            : failed ? "bg-red-400/15 text-red-300"
+                              : previewReady ? "bg-sky-400/15 text-sky-300"
+                                : selected ? "bg-amber-300/15 text-amber-200"
+                                  : "bg-white/5 text-zinc-500"
+                      }`}>
+                        {rendered ? "Final" : rendering ? "Rendering" : queued ? "Queued" : failed ? "Failed" : previewReady ? "Preview ready" : selected ? "Selected" : "Ready"}
+                      </span>
+                    </div>
+                    <p className="mt-1.5 line-clamp-2 text-[10px] leading-relaxed text-zinc-500">{candidate.summary || "Agent-proposed edit"}</p>
+                    <p className="mt-2 font-mono text-[9px] text-zinc-600">r{candidate.revision} · {formatTimecode(getTimelineDuration(candidate.plan))} · {candidateTracks.primaryClips + candidateTracks.overlayClips + candidateTracks.audioClips} clips · v{candidate.plan.version}</p>
+                    {candidate.plan.version === "2" ? <p className="mt-1 text-[9px] text-zinc-600">{candidateTracks.transitions} transitions · {candidateTracks.titleCards} titles · {candidateTracks.burnedCaptions ? "styled captions" : "selectable captions"}{candidateTracks.ducking ? " · ducking" : ""}</p> : null}
+                  </button>
+                  <button
+                    className={`mt-3 flex h-8 w-full items-center justify-center gap-2 rounded-md border text-[10px] font-medium transition disabled:cursor-not-allowed disabled:opacity-45 ${
+                      batchSelected ? "border-sky-300/50 bg-sky-400/15 text-sky-200" : "border-white/10 bg-black/25 text-zinc-400 hover:border-sky-300/35 hover:text-sky-200"
+                    }`}
+                    disabled={!canBatchRender}
+                    onClick={() => toggleBatchCandidate(candidate.id)}
+                    aria-pressed={batchSelected}
+                  >
+                    {batchSelected ? <Check className="size-3" /> : <Sparkles className="size-3" />}
+                    {batchSelected ? "In batch" : previewReady ? "Add to batch" : "Preview first"}
+                  </button>
+                </div>
               )
             })}
+          </div>
+          <div className="mt-3 grid gap-2 rounded-lg border border-sky-300/15 bg-sky-400/[0.06] p-3 md:grid-cols-[minmax(0,1fr)_auto]">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-sky-200">Batch render queue</p>
+              <p className="mt-1 text-[10px] text-zinc-500">
+                {batchCandidateIds.length > 0
+                  ? `${batchCandidateIds.length} preview-approved candidate${batchCandidateIds.length === 1 ? "" : "s"} selected for final render.`
+                  : latestBatch
+                    ? `Latest batch ${latestBatch.status}: ${latestBatch.items.filter((item) => item.status === "rendered").length}/${latestBatch.items.length} rendered.`
+                    : "Add preview-ready candidates, then approve the batch once."}
+              </p>
+              {latestBatch ? (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {latestBatch.items.map((item) => (
+                    <span
+                      key={`${latestBatch.id}-${item.candidateId}`}
+                      className={`rounded-full px-2 py-0.5 text-[9px] ${
+                        item.status === "rendered" ? "bg-emerald-400/15 text-emerald-300"
+                          : item.status === "failed" ? "bg-red-400/15 text-red-300"
+                            : item.status === "rendering" ? "bg-amber-300/15 text-amber-200"
+                              : "bg-white/5 text-zinc-400"
+                      }`}
+                    >
+                      {item.candidateId}: {item.status}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {batchError ? <p className="mt-2 text-[10px] text-red-300">{batchError}</p> : null}
+            </div>
+            <div className="flex items-end gap-2">
+              {latestBatch && (latestBatch.status === "failed" || latestBatch.status === "partial") ? (
+                <Button variant="outline" size="sm" onClick={selectFailedBatchCandidates} disabled={batchRendering || latestBatchActive}>
+                  <RotateCcw /> Select failed
+                </Button>
+              ) : null}
+              <Button
+                className="bg-sky-300 text-sky-950 hover:bg-sky-200"
+                disabled={batchCandidateIds.length === 0 || batchRendering || latestBatchActive}
+                onClick={() => void approveBatch()}
+              >
+                {batchRendering || latestBatchActive ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
+                {batchRendering || latestBatchActive ? "Batch rendering..." : `Approve batch (${batchCandidateIds.length})`}
+              </Button>
+            </div>
           </div>
           {activeCandidate ? (
             <div className="mt-3 grid gap-2 rounded-lg border border-white/10 bg-black/20 p-3 md:grid-cols-[minmax(0,1fr)_auto]">
@@ -697,7 +915,7 @@ function AgentReviewWorkspace() {
               </div>
               <Button
                 className="self-end bg-zinc-100 text-zinc-950 hover:bg-white"
-                disabled={!planIsDirty || reviewState === "saving" || reviewState === "rendering" || reviewState === "rendered"}
+                disabled={!planIsDirty || interactionLocked || reviewState === "rendered"}
                 onClick={() => void saveRevision()}
               >
                 {reviewState === "saving" ? <LoaderCircle className="animate-spin" /> : <Save />}
@@ -873,7 +1091,7 @@ function AgentReviewWorkspace() {
           </div>
         </div>
 
-        <aside className="hidden border-l border-white/10 bg-[#101113] lg:block">
+        <aside className="hidden overflow-y-auto border-l border-white/10 bg-[#101113] lg:block">
           <PanelHeading icon={<Gauge />} label="Clip inspector" />
           {selectedSegment ? (
             <div className="divide-y divide-white/8">
@@ -885,7 +1103,7 @@ function AgentReviewWorkspace() {
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={plan.timeline.clips[0]?.id === selectedSegment.clip.id || reviewState === "rendered"}
+                      disabled={plan.timeline.clips[0]?.id === selectedSegment.clip.id || !canEditPlan}
                       onClick={() => setPlan(movePlanClip(plan, selectedSegment.clip.id, -1))}
                     >
                       <ArrowUp /> Earlier
@@ -893,7 +1111,7 @@ function AgentReviewWorkspace() {
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={plan.timeline.clips.at(-1)?.id === selectedSegment.clip.id || reviewState === "rendered"}
+                      disabled={plan.timeline.clips.at(-1)?.id === selectedSegment.clip.id || !canEditPlan}
                       onClick={() => setPlan(movePlanClip(plan, selectedSegment.clip.id, 1))}
                     >
                       <ArrowDown /> Later
@@ -909,7 +1127,7 @@ function AgentReviewWorkspace() {
                     min={0}
                     max={selectedSegment.clip.sourceEnd - 0.01}
                     step={0.1}
-                    disabled={!reviewSession || reviewState === "rendered"}
+                    disabled={!canEditPlan}
                     onChange={(value) => reviseSelectedClip({ sourceStart: value })}
                   />
                   <NumberEditor
@@ -917,7 +1135,7 @@ function AgentReviewWorkspace() {
                     value={selectedSegment.clip.sourceEnd}
                     min={selectedSegment.clip.sourceStart + 0.01}
                     step={0.1}
-                    disabled={!reviewSession || reviewState === "rendered"}
+                    disabled={!canEditPlan}
                     onChange={(value) => reviseSelectedClip({ sourceEnd: value })}
                   />
                 </div>
@@ -931,7 +1149,7 @@ function AgentReviewWorkspace() {
                   max={4}
                   step={0.05}
                   suffix="×"
-                  disabled={!reviewSession || reviewState === "rendered"}
+                  disabled={!canEditPlan}
                   onChange={(value) => reviseSelectedClip({ speed: value })}
                 />
                 <NumberEditor
@@ -941,7 +1159,7 @@ function AgentReviewWorkspace() {
                   max={2}
                   step={0.05}
                   suffix="×"
-                  disabled={!reviewSession || reviewState === "rendered"}
+                  disabled={!canEditPlan}
                   onChange={(value) => reviseSelectedClip({ volume: value })}
                 />
                 <InspectorValue icon={<Clock3 />} label="Timeline length" value={`${selectedSegment.durationSeconds.toFixed(1)}s`} />
@@ -949,7 +1167,7 @@ function AgentReviewWorkspace() {
                   <button
                     className={`flex w-full items-center justify-between rounded-md border px-2.5 py-2 text-[10px] transition ${plan.timeline.captionsAssetId ? "border-violet-300/30 bg-violet-400/10 text-violet-200" : "border-white/10 text-zinc-500"}`}
                     onClick={() => setPlan(setPlanCaptionsEnabled(plan, !plan.timeline.captionsAssetId))}
-                    disabled={!plan.assets.some((asset) => asset.kind === "captions") || reviewState === "rendered"}
+                    disabled={!plan.assets.some((asset) => asset.kind === "captions") || !canEditPlan}
                     aria-pressed={Boolean(plan.timeline.captionsAssetId)}
                   >
                     <span className="flex items-center gap-1.5"><Captions className="size-3" /> Include captions</span>
@@ -957,6 +1175,25 @@ function AgentReviewWorkspace() {
                   </button>
                 ) : null}
               </InspectorSection>
+              <ProductionInspector
+                plan={plan}
+                disabled={!canEditPlan}
+                selectedOverlayClipId={selectedOverlayClipId}
+                selectedAudioTrackId={selectedAudioTrackId}
+                selectedAudioClipId={selectedAudioClipId}
+                selectedTransitionId={selectedTransitionId}
+                selectedTitleCardId={selectedTitleCardId}
+                onSelectOverlayClip={setSelectedOverlayClipId}
+                onSelectAudioTrack={(trackId) => {
+                  setSelectedAudioTrackId(trackId)
+                  const track = plan.version === "2" ? plan.timeline.audioTracks.find((entry) => entry.id === trackId) : undefined
+                  setSelectedAudioClipId(track?.clips[0]?.id ?? "")
+                }}
+                onSelectAudioClip={setSelectedAudioClipId}
+                onSelectTransition={setSelectedTransitionId}
+                onSelectTitleCard={setSelectedTitleCardId}
+                onApply={reviseProductionPlan}
+              />
               <InspectorSection title="Review state">
                 <div className={`rounded-lg border p-3 ${
                   reviewState === "rendered"
@@ -1076,6 +1313,7 @@ function AgentReviewWorkspace() {
               onClick={() => {
                 setPlan(sampleEditPlan)
                 setSelectedClipId(sampleEditPlan.timeline.clips[0]?.id ?? "")
+                resetProductionSelections(sampleEditPlan)
                 setCurrentSourceTime(sampleEditPlan.timeline.clips[0]?.sourceStart ?? 0)
                 setReviewState("review")
                 setApprovalResult(null)
@@ -1198,6 +1436,242 @@ function InspectorValue({ icon, label, value }: { icon?: React.ReactNode; label:
   )
 }
 
+function ProductionInspector({
+  plan,
+  disabled,
+  selectedOverlayClipId,
+  selectedAudioTrackId,
+  selectedAudioClipId,
+  selectedTransitionId,
+  selectedTitleCardId,
+  onSelectOverlayClip,
+  onSelectAudioTrack,
+  onSelectAudioClip,
+  onSelectTransition,
+  onSelectTitleCard,
+  onApply,
+}: {
+  plan: EditPlan
+  disabled: boolean
+  selectedOverlayClipId: string
+  selectedAudioTrackId: string
+  selectedAudioClipId: string
+  selectedTransitionId: string
+  selectedTitleCardId: string
+  onSelectOverlayClip: (value: string) => void
+  onSelectAudioTrack: (value: string) => void
+  onSelectAudioClip: (value: string) => void
+  onSelectTransition: (value: string) => void
+  onSelectTitleCard: (value: string) => void
+  onApply: (edit: (current: EditPlan) => EditPlan) => void
+}) {
+  if (plan.version !== "2") return null
+
+  const overlayEntries = plan.timeline.overlayTracks.flatMap((track) =>
+    track.clips.map((clip) => ({ track, clip })),
+  )
+  const overlayEntry = overlayEntries.find((entry) => entry.clip.id === selectedOverlayClipId) ?? overlayEntries[0]
+  const audioTrack = plan.timeline.audioTracks.find((track) => track.id === selectedAudioTrackId) ?? plan.timeline.audioTracks[0]
+  const audioClip = audioTrack?.clips.find((clip) => clip.id === selectedAudioClipId) ?? audioTrack?.clips[0]
+  const transition = plan.timeline.transitions.find((entry) => entry.id === selectedTransitionId) ?? plan.timeline.transitions[0]
+  const titleCard = plan.timeline.titleCards.find((entry) => entry.id === selectedTitleCardId) ?? plan.timeline.titleCards[0]
+  const captionStyle = plan.timeline.captionStyle ?? {
+    mode: "burn-in" as const,
+    preset: "clean" as const,
+    fontSize: 42,
+    textColor: "#FFFFFF",
+    outlineColor: "#000000",
+    backgroundColor: "#000000",
+    backgroundOpacity: 0.72,
+    marginV: 56,
+    alignment: "bottom" as const,
+  }
+  const ducking = plan.timeline.audioMix?.ducking ?? {
+    enabled: false,
+    targetTrackIds: plan.timeline.audioTracks.filter((track) => track.role === "music").map((track) => track.id),
+    threshold: 0.04,
+    ratio: 8,
+    attackMs: 20,
+    releaseMs: 250,
+  }
+
+  return (
+    <>
+      {overlayEntry ? (
+        <InspectorSection title="Overlay">
+          <SelectEditor
+            label="Clip"
+            value={overlayEntry.clip.id}
+            options={overlayEntries.map((entry) => ({ value: entry.clip.id, label: `${entry.clip.id} (${entry.track.id})` }))}
+            disabled={disabled}
+            onChange={onSelectOverlayClip}
+          />
+          <div className="grid grid-cols-2 gap-2">
+            <NumberEditor label="Timeline" value={overlayEntry.clip.timelineStart} min={0} step={0.1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { timelineStart: value }))} />
+            <NumberEditor label="Opacity" value={overlayEntry.clip.opacity} min={0} max={1} step={0.05} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { opacity: value }))} />
+            <NumberEditor label="In" value={overlayEntry.clip.sourceStart} min={0} max={overlayEntry.clip.sourceEnd - 0.01} step={0.1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { sourceStart: value }))} />
+            <NumberEditor label="Out" value={overlayEntry.clip.sourceEnd} min={overlayEntry.clip.sourceStart + 0.01} step={0.1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { sourceEnd: value }))} />
+            <NumberEditor label="X" value={overlayEntry.clip.x} min={0} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { x: Math.round(value) }))} />
+            <NumberEditor label="Y" value={overlayEntry.clip.y} min={0} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { y: Math.round(value) }))} />
+            <NumberEditor label="Width" value={overlayEntry.clip.width} min={1} max={plan.project.width} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { width: Math.round(value) }))} />
+            <NumberEditor label="Height" value={overlayEntry.clip.height} min={1} max={plan.project.height} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { height: Math.round(value) }))} />
+          </div>
+          <SelectEditor
+            label="Fit"
+            value={overlayEntry.clip.fit}
+            options={["contain", "cover", "stretch"].map((value) => ({ value, label: value }))}
+            disabled={disabled}
+            onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { fit: value as "contain" | "cover" | "stretch" }))}
+          />
+          <ToggleEditor
+            label="Include overlay audio"
+            checked={overlayEntry.clip.includeAudio}
+            disabled={disabled}
+            onChange={(checked) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { includeAudio: checked }))}
+          />
+        </InspectorSection>
+      ) : null}
+
+      {audioTrack && audioClip ? (
+        <InspectorSection title="Audio mix">
+          <SelectEditor
+            label="Track"
+            value={audioTrack.id}
+            options={plan.timeline.audioTracks.map((track) => ({ value: track.id, label: `${track.id} (${track.role})` }))}
+            disabled={disabled}
+            onChange={onSelectAudioTrack}
+          />
+          <SelectEditor
+            label="Role"
+            value={audioTrack.role}
+            options={["music", "effects", "voiceover"].map((value) => ({ value, label: value }))}
+            disabled={disabled}
+            onChange={(value) => onApply((current) => updateAudioTrack(current, audioTrack.id, { role: value as "music" | "effects" | "voiceover" }))}
+          />
+          <SelectEditor
+            label="Clip"
+            value={audioClip.id}
+            options={audioTrack.clips.map((clip) => ({ value: clip.id, label: clip.id }))}
+            disabled={disabled}
+            onChange={onSelectAudioClip}
+          />
+          <div className="grid grid-cols-2 gap-2">
+            <NumberEditor label="Timeline" value={audioClip.timelineStart} min={0} step={0.1} disabled={disabled} onChange={(value) => onApply((current) => updateAudioClip(current, audioClip.id, { timelineStart: value }))} />
+            <NumberEditor label="Volume" value={audioClip.volume} min={0} max={2} step={0.05} suffix="x" disabled={disabled} onChange={(value) => onApply((current) => updateAudioClip(current, audioClip.id, { volume: value }))} />
+            <NumberEditor label="In" value={audioClip.sourceStart} min={0} max={audioClip.sourceEnd - 0.01} step={0.1} disabled={disabled} onChange={(value) => onApply((current) => updateAudioClip(current, audioClip.id, { sourceStart: value }))} />
+            <NumberEditor label="Out" value={audioClip.sourceEnd} min={audioClip.sourceStart + 0.01} step={0.1} disabled={disabled} onChange={(value) => onApply((current) => updateAudioClip(current, audioClip.id, { sourceEnd: value }))} />
+          </div>
+        </InspectorSection>
+      ) : null}
+
+      {transition ? (
+        <InspectorSection title="Transition">
+          <SelectEditor
+            label="Boundary"
+            value={transition.id}
+            options={plan.timeline.transitions.map((entry) => ({ value: entry.id, label: `${entry.fromClipId} -> ${entry.toClipId}` }))}
+            disabled={disabled}
+            onChange={onSelectTransition}
+          />
+          <SelectEditor
+            label="Type"
+            value={transition.type}
+            options={["fade", "wipeleft", "wiperight", "slideleft", "slideright"].map((value) => ({ value, label: value }))}
+            disabled={disabled}
+            onChange={(value) => onApply((current) => updateTransition(current, transition.id, { type: value as "fade" | "wipeleft" | "wiperight" | "slideleft" | "slideright" }))}
+          />
+          <NumberEditor label="Duration" value={transition.duration} min={0.1} max={3} step={0.1} suffix="s" disabled={disabled} onChange={(value) => onApply((current) => updateTransition(current, transition.id, { duration: value }))} />
+        </InspectorSection>
+      ) : null}
+
+      {titleCard ? (
+        <InspectorSection title="Title card">
+          <SelectEditor
+            label="Card"
+            value={titleCard.id}
+            options={plan.timeline.titleCards.map((entry) => ({ value: entry.id, label: entry.id }))}
+            disabled={disabled}
+            onChange={onSelectTitleCard}
+          />
+          <SelectEditor
+            label="Template"
+            value={titleCard.template}
+            options={["intro", "outro", "lower-third"].map((value) => ({ value, label: value }))}
+            disabled={disabled}
+            onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { template: value as "intro" | "outro" | "lower-third" }))}
+          />
+          <TextEditor label="Title" value={titleCard.title} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { title: value }))} />
+          <TextEditor label="Subtitle" value={titleCard.subtitle ?? ""} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { subtitle: value || undefined }))} />
+          <div className="grid grid-cols-2 gap-2">
+            <NumberEditor label="Timeline" value={titleCard.timelineStart} min={0} step={0.1} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { timelineStart: value }))} />
+            <NumberEditor label="Duration" value={titleCard.duration} min={0.5} max={30} step={0.1} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { duration: value }))} />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <ColorEditor label="Bg" value={titleCard.background} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { background: value }))} />
+            <ColorEditor label="Text" value={titleCard.textColor} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { textColor: value }))} />
+            <ColorEditor label="Accent" value={titleCard.accentColor} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { accentColor: value }))} />
+          </div>
+        </InspectorSection>
+      ) : null}
+
+      {plan.timeline.captionsAssetId ? (
+        <InspectorSection title="Caption style">
+          <div className="grid grid-cols-2 gap-2">
+            <SelectEditor
+              label="Mode"
+              value={captionStyle.mode}
+              options={["selectable", "burn-in", "both"].map((value) => ({ value, label: value }))}
+              disabled={disabled}
+              onChange={(value) => onApply((current) => updateCaptionStyle(current, { mode: value as "selectable" | "burn-in" | "both" }))}
+            />
+            <SelectEditor
+              label="Preset"
+              value={captionStyle.preset}
+              options={["clean", "bold", "minimal"].map((value) => ({ value, label: value }))}
+              disabled={disabled}
+              onChange={(value) => onApply((current) => updateCaptionStyle(current, { preset: value as "clean" | "bold" | "minimal" }))}
+            />
+          </div>
+          <SelectEditor
+            label="Alignment"
+            value={captionStyle.alignment}
+            options={["bottom", "middle", "top"].map((value) => ({ value, label: value }))}
+            disabled={disabled}
+            onChange={(value) => onApply((current) => updateCaptionStyle(current, { alignment: value as "bottom" | "middle" | "top" }))}
+          />
+          <div className="grid grid-cols-3 gap-2">
+            <NumberEditor label="Size" value={captionStyle.fontSize ?? 42} min={20} max={120} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateCaptionStyle(current, { fontSize: Math.round(value) }))} />
+            <NumberEditor label="Margin" value={captionStyle.marginV} min={12} max={480} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateCaptionStyle(current, { marginV: Math.round(value) }))} />
+            <NumberEditor label="Bg alpha" value={captionStyle.backgroundOpacity} min={0} max={1} step={0.05} disabled={disabled} onChange={(value) => onApply((current) => updateCaptionStyle(current, { backgroundOpacity: value }))} />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <ColorEditor label="Text" value={captionStyle.textColor} disabled={disabled} onChange={(value) => onApply((current) => updateCaptionStyle(current, { textColor: value }))} />
+            <ColorEditor label="Outline" value={captionStyle.outlineColor} disabled={disabled} onChange={(value) => onApply((current) => updateCaptionStyle(current, { outlineColor: value }))} />
+            <ColorEditor label="Bg" value={captionStyle.backgroundColor} disabled={disabled} onChange={(value) => onApply((current) => updateCaptionStyle(current, { backgroundColor: value }))} />
+          </div>
+        </InspectorSection>
+      ) : null}
+
+      {plan.timeline.audioTracks.length > 0 ? (
+        <InspectorSection title="Ducking">
+          <ToggleEditor
+            label="Smart ducking"
+            checked={ducking.enabled}
+            disabled={disabled}
+            onChange={(checked) => onApply((current) => updateDucking(current, { enabled: checked }))}
+          />
+          <div className="grid grid-cols-2 gap-2">
+            <NumberEditor label="Threshold" value={ducking.threshold} min={0.001} max={1} step={0.001} disabled={disabled || !ducking.enabled} onChange={(value) => onApply((current) => updateDucking(current, { threshold: value }))} />
+            <NumberEditor label="Ratio" value={ducking.ratio} min={1} max={20} step={0.5} disabled={disabled || !ducking.enabled} onChange={(value) => onApply((current) => updateDucking(current, { ratio: value }))} />
+            <NumberEditor label="Attack" value={ducking.attackMs} min={0.01} max={2000} step={1} suffix="ms" disabled={disabled || !ducking.enabled} onChange={(value) => onApply((current) => updateDucking(current, { attackMs: value }))} />
+            <NumberEditor label="Release" value={ducking.releaseMs} min={0.01} max={9000} step={1} suffix="ms" disabled={disabled || !ducking.enabled} onChange={(value) => onApply((current) => updateDucking(current, { releaseMs: value }))} />
+          </div>
+        </InspectorSection>
+      ) : null}
+    </>
+  )
+}
+
 function NumberEditor({
   label,
   value,
@@ -1240,6 +1714,119 @@ function NumberEditor({
   )
 }
 
+function TextEditor({
+  label,
+  value,
+  disabled,
+  onChange,
+}: {
+  label: string
+  value: string
+  disabled?: boolean
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="block rounded-md border border-white/10 bg-black/30 p-2">
+      <span className="block text-[9px] uppercase tracking-wider text-zinc-600">{label}</span>
+      <input
+        className="mt-1 w-full bg-transparent text-[11px] text-zinc-200 outline-none disabled:text-zinc-500"
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
+  )
+}
+
+function SelectEditor({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  label: string
+  value: string
+  options: Array<{ value: string; label: string }>
+  disabled?: boolean
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="block rounded-md border border-white/10 bg-black/30 p-2">
+      <span className="block text-[9px] uppercase tracking-wider text-zinc-600">{label}</span>
+      <select
+        className="mt-1 w-full bg-transparent text-[11px] text-zinc-200 outline-none disabled:text-zinc-500"
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+function ToggleEditor({
+  label,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  disabled?: boolean
+  onChange: (value: boolean) => void
+}) {
+  return (
+    <label className="flex items-center justify-between rounded-md border border-white/10 bg-black/30 p-2 text-[11px] text-zinc-400">
+      <span>{label}</span>
+      <input
+        className="accent-amber-300"
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+    </label>
+  )
+}
+
+function ColorEditor({
+  label,
+  value,
+  disabled,
+  onChange,
+}: {
+  label: string
+  value: string
+  disabled?: boolean
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="block rounded-md border border-white/10 bg-black/30 p-2">
+      <span className="block text-[9px] uppercase tracking-wider text-zinc-600">{label}</span>
+      <span className="mt-1 flex items-center gap-1.5">
+        <input
+          className="h-6 w-7 rounded border-0 bg-transparent p-0 disabled:opacity-50"
+          type="color"
+          value={value}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value)}
+          aria-label={label}
+        />
+        <input
+          className="min-w-0 flex-1 bg-transparent font-mono text-[10px] text-zinc-200 outline-none disabled:text-zinc-500"
+          value={value}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      </span>
+    </label>
+  )
+}
+
 function TimelineRuler({ duration }: { duration: number }) {
   const marks = Array.from({ length: 5 }, (_, index) => (duration / 4) * index)
   return (
@@ -1247,6 +1834,14 @@ function TimelineRuler({ duration }: { duration: number }) {
       {marks.map((mark) => <span key={mark}>{formatTimecode(mark)}</span>)}
     </div>
   )
+}
+
+function canBatchRenderCandidate(candidate: ReviewCandidate) {
+  return candidateHasCurrentPreview(candidate) &&
+    !candidate.outputExists &&
+    candidate.status !== "rendered" &&
+    candidate.status !== "queued" &&
+    candidate.status !== "rendering"
 }
 
 function humanizeId(value: string) {
