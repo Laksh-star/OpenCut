@@ -69,10 +69,13 @@ describe("edit plan review model", () => {
       timeline: {
         ...sampleEditPlan.timeline,
         overlayTracks: [{ id: "b-roll", clips: [{ id: "b-roll-1", assetId: "overlay", timelineStart: 3, sourceStart: 0, sourceEnd: 2, width: 640, height: 360 }] }],
-        audioTracks: [{ id: "music", clips: [{ id: "music-1", assetId: "music", timelineStart: 0, sourceStart: 0, sourceEnd: 70 }] }],
+        audioTracks: [{ id: "music", role: "music", clips: [{ id: "music-1", assetId: "music", timelineStart: 0, sourceStart: 0, sourceEnd: 70 }] }],
+        titleCards: [{ id: "intro", timelineStart: 0, duration: 2, title: "Opening" }],
+        captionStyle: { mode: "burn-in", preset: "clean" },
+        audioMix: { ducking: { enabled: true } },
       },
     })
-    expect(getPlanTrackCounts(layered)).toEqual({ primaryClips: 2, overlayTracks: 1, overlayClips: 1, audioTracks: 1, audioClips: 1 })
+    expect(getPlanTrackCounts(layered)).toEqual({ primaryClips: 2, overlayTracks: 1, overlayClips: 1, audioTracks: 1, audioClips: 1, transitions: 0, titleCards: 1, burnedCaptions: true, ducking: true })
     expect(getTimelineDuration(layered)).toBe(70)
   })
 })

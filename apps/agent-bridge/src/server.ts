@@ -21,7 +21,7 @@ const jsonResult = (value: unknown) => ({
 
 export const buildServer = () => {
   const server = new McpServer(
-    { name: "opencut-agent-bridge", version: "0.3.0" },
+    { name: "opencut-agent-bridge", version: "0.4.0" },
     {
       instructions:
         "Inspect media before creating an edit plan. Validate, save, and compile the plan before rendering. Rendering only creates a local preview; this server never publishes media.",

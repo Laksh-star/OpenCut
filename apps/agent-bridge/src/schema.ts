@@ -184,8 +184,52 @@ const overlayTrackSchema = z.object({
 
 const audioTrackSchema = z.object({
   id: identifierSchema,
+  role: z.enum(["music", "effects", "voiceover"]).default("effects"),
   clips: z.array(audioClipSchema).min(1),
 });
+
+const transitionSchema = z.object({
+  id: identifierSchema,
+  fromClipId: identifierSchema,
+  toClipId: identifierSchema,
+  type: z.enum(["fade", "wipeleft", "wiperight", "slideleft", "slideright"]).default("fade"),
+  duration: z.number().min(0.1).max(3).default(0.5),
+});
+
+const titleCardSchema = z.object({
+  id: identifierSchema,
+  template: z.enum(["intro", "outro", "lower-third"]).default("intro"),
+  timelineStart: z.number().min(0),
+  duration: z.number().min(0.5).max(30),
+  title: z.string().trim().min(1).max(160),
+  subtitle: z.string().trim().min(1).max(240).optional(),
+  background: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#111827"),
+  textColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#FFFFFF"),
+  accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#FBBF24"),
+});
+
+const captionStyleSchema = z.object({
+  mode: z.enum(["selectable", "burn-in", "both"]).default("burn-in"),
+  preset: z.enum(["clean", "bold", "minimal"]).default("clean"),
+  fontSize: z.number().int().min(20).max(120).optional(),
+  textColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#FFFFFF"),
+  outlineColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#000000"),
+  backgroundColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#000000"),
+  backgroundOpacity: z.number().min(0).max(1).default(0.72),
+  marginV: z.number().int().min(12).max(480).default(56),
+  alignment: z.enum(["bottom", "middle", "top"]).default("bottom"),
+});
+
+const audioMixSchema = z.object({
+  ducking: z.object({
+    enabled: z.boolean().default(true),
+    targetTrackIds: z.array(identifierSchema).default([]),
+    threshold: z.number().min(0.001).max(1).default(0.04),
+    ratio: z.number().min(1).max(20).default(8),
+    attackMs: z.number().min(0.01).max(2_000).default(20),
+    releaseMs: z.number().min(0.01).max(9_000).default(250),
+  }).optional(),
+}).optional();
 
 export const editPlanV2Schema = z
   .object({
@@ -196,7 +240,11 @@ export const editPlanV2Schema = z
       clips: z.array(clipSchema).min(1),
       overlayTracks: z.array(overlayTrackSchema).default([]),
       audioTracks: z.array(audioTrackSchema).default([]),
+      transitions: z.array(transitionSchema).default([]),
+      titleCards: z.array(titleCardSchema).default([]),
       captionsAssetId: identifierSchema.optional(),
+      captionStyle: captionStyleSchema.optional(),
+      audioMix: audioMixSchema,
     }),
     output: outputSchema,
   })
@@ -259,6 +307,82 @@ export const editPlanV2Schema = z
       }
     }
 
+    const transitionBoundaries = new Set<string>();
+    for (const [index, transition] of plan.timeline.transitions.entries()) {
+      const fromIndex = plan.timeline.clips.findIndex((clip) => clip.id === transition.fromClipId);
+      const toIndex = plan.timeline.clips.findIndex((clip) => clip.id === transition.toClipId);
+      if (fromIndex < 0 || toIndex !== fromIndex + 1) {
+        context.addIssue({
+          code: "custom",
+          message: `Transition ${transition.id} must connect adjacent primary clips`,
+          path: ["timeline", "transitions", index],
+        });
+        continue;
+      }
+      const boundary = `${transition.fromClipId}->${transition.toClipId}`;
+      if (transitionBoundaries.has(boundary)) {
+        context.addIssue({
+          code: "custom",
+          message: `Duplicate transition boundary: ${boundary}`,
+          path: ["timeline", "transitions", index],
+        });
+      }
+      transitionBoundaries.add(boundary);
+      const fromClip = plan.timeline.clips[fromIndex]!;
+      const toClip = plan.timeline.clips[toIndex]!;
+      const shortestClip = Math.min(
+        (fromClip.sourceEnd - fromClip.sourceStart) / fromClip.speed,
+        (toClip.sourceEnd - toClip.sourceStart) / toClip.speed,
+      );
+      if (transition.duration >= shortestClip) {
+        context.addIssue({
+          code: "custom",
+          message: `Transition ${transition.id} must be shorter than both connected clips`,
+          path: ["timeline", "transitions", index, "duration"],
+        });
+      }
+    }
+
+    const titleIds = new Set<string>();
+    for (const [index, title] of plan.timeline.titleCards.entries()) {
+      if (clipIds.has(title.id) || titleIds.has(title.id)) {
+        context.addIssue({ code: "custom", message: `Duplicate timeline id: ${title.id}`, path: ["timeline", "titleCards", index, "id"] });
+      }
+      titleIds.add(title.id);
+    }
+
+    if (plan.timeline.captionStyle && !plan.timeline.captionsAssetId) {
+      context.addIssue({
+        code: "custom",
+        message: "captionStyle requires captionsAssetId",
+        path: ["timeline", "captionStyle"],
+      });
+    }
+
+    const ducking = plan.timeline.audioMix?.ducking;
+    if (ducking?.enabled) {
+      const trackIds = new Set(plan.timeline.audioTracks.map((track) => track.id));
+      const targets = ducking.targetTrackIds.length > 0
+        ? ducking.targetTrackIds
+        : plan.timeline.audioTracks.filter((track) => track.role === "music").map((track) => track.id);
+      if (targets.length === 0) {
+        context.addIssue({
+          code: "custom",
+          message: "Enabled ducking requires a targetTrackIds entry or a music-role track",
+          path: ["timeline", "audioMix", "ducking"],
+        });
+      }
+      for (const [index, id] of ducking.targetTrackIds.entries()) {
+        if (!trackIds.has(id)) {
+          context.addIssue({
+            code: "custom",
+            message: `Unknown ducking target track id: ${id}`,
+            path: ["timeline", "audioMix", "ducking", "targetTrackIds", index],
+          });
+        }
+      }
+    }
+
     validateCaptions(plan.assets, plan.timeline.captionsAssetId, context);
     validateOutput(plan.output.path, context);
   });
@@ -283,16 +407,21 @@ export const upgradeEditPlanToV2 = (value: unknown): EditPlanV2 => {
 };
 
 export const getPlanDuration = (plan: EditPlan) => {
-  const primaryDuration = plan.timeline.clips.reduce(
+  const sequentialDuration = plan.timeline.clips.reduce(
     (total, clip) => total + (clip.sourceEnd - clip.sourceStart) / clip.speed,
     0,
   );
-  if (plan.version === "1") return primaryDuration;
+  if (plan.version === "1") return sequentialDuration;
+  const primaryDuration = sequentialDuration - plan.timeline.transitions.reduce(
+    (total, transition) => total + transition.duration,
+    0,
+  );
   const overlayEnds = plan.timeline.overlayTracks.flatMap((track) =>
     track.clips.map((clip) => clip.timelineStart + (clip.sourceEnd - clip.sourceStart) / clip.speed),
   );
   const audioEnds = plan.timeline.audioTracks.flatMap((track) =>
     track.clips.map((clip) => clip.timelineStart + (clip.sourceEnd - clip.sourceStart) / clip.speed),
   );
-  return Math.max(primaryDuration, ...overlayEnds, ...audioEnds);
+  const titleEnds = plan.timeline.titleCards.map((card) => card.timelineStart + card.duration);
+  return Math.max(primaryDuration, ...overlayEnds, ...audioEnds, ...titleEnds);
 };

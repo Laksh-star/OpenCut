@@ -53,8 +53,9 @@ This fork includes an early, local-first MCP companion at
 [`apps/agent-bridge`](apps/agent-bridge). It gives AI agents a safe edit-plan
 workflow and FFmpeg preview renderer while OpenCut's native Editor API, MCP
 server, and headless mode are still under development. The bridge accepts both
-the original sequential plan and a backward-compatible v2 contract with
-z-ordered video overlays and independently mixed audio tracks.
+the original sequential plan and a backward-compatible v2 production contract
+with z-ordered video overlays, independently mixed audio, speech-keyed music
+ducking, crossfades, reusable title cards, and styled burned-in captions.
 
 See the [agent bridge documentation](apps/agent-bridge/README.md) for the tool
 contract, setup, safety boundaries, and agent configuration.
@@ -92,7 +93,7 @@ In the review workspace you can:
 7. Render and stream a fast preview tied to the current revision.
 8. Approve that revision separately to persist hashes and render the higher-quality MP4.
 9. Reload without losing selection, revisions, preview state, notes, audit history, or final state.
-10. Review v2 overlay/audio track counts and all layered media assets before previewing the compiled result.
+10. Review v2 overlay/audio track counts, transitions, title cards, ducking, caption treatment, and all layered media assets before previewing the compiled result.
 
 This is intentionally a review boundary, not a claim that the rewrite already
 has a complete editor. The current revision adapter remains FFmpeg-backed and

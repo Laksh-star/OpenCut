@@ -1,7 +1,7 @@
 {
   "name": "@opencut/agent-bridge",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "bin": {
     "opencut-agent": "./bin/opencut-agent",
@@ -21,10 +21,12 @@
     "smoke:approval": "bun run scripts/approval-smoke.ts",
     "smoke:review": "bun run scripts/review-session-smoke.ts",
     "smoke:multitrack": "bun run scripts/multitrack-smoke.ts",
+    "smoke:production": "bun run scripts/multitrack-smoke.ts",
     "setup-bridge": "bun run scripts/setup-bridge.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "sharp": "^0.34.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {

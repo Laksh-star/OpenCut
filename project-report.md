@@ -18,7 +18,7 @@ The fork now contains:
 - HTTP byte-range streaming for multi-gigabyte local sources, so the reviewer no longer reselects the file in the browser;
 - a loopback-only HTTP bridge that connects the review UI to the renderer;
 - immutable plan revisions, append-only review events, and persistent approval/project records with SHA-256 provenance;
-- a backward-compatible v2 plan with z-ordered video overlays and independently timed/mixed audio tracks;
+- a backward-compatible v2 production plan with z-ordered video overlays, independently timed/mixed audio, speech-keyed music ducking, transitions, title cards, and styled burned-in captions;
 - a one-command setup packager that emits workspace-scoped environment, Codex MCP, and machine-readable setup files;
 - automated schema, path-security, rendering, project-persistence, and web-model tests;
 - a completed real-video demonstration using the 1986 Swami Ranganathananda interview;
@@ -105,6 +105,10 @@ A-roll and adds:
 
 - z-ordered overlay tracks with output-timeline start, position, size, opacity, fit mode, and optional source audio;
 - independent audio tracks whose clips have their own start, trim, speed, and volume;
+- audio-track roles plus configurable speech-keyed ducking for music beds;
+- validated transitions between adjacent A-roll clips;
+- timed `intro`, `outro`, and `lower-third` title-card templates;
+- selectable, burned-in, or dual caption modes with clean, bold, and minimal style presets;
 - audio assets in addition to video and caption assets;
 - duplicate track/clip validation, canvas-bound checks, same-track overlap rejection, and duration calculation across every layer;
 - a deterministic v1-to-v2 upgrade helper and MCP tool.
@@ -157,6 +161,10 @@ The compiler converts sequential plan clips into deterministic FFmpeg arguments.
 - optional captions muxed as `mov_text`;
 - v2 video overlays ordered by track z-index and positioned on the project canvas;
 - v2 audio from video overlays plus dedicated audio tracks mixed with `amix`;
+- speech-keyed music ducking through `sidechaincompress` while primary dialogue remains uncompressed;
+- adjacent video/audio transitions through `xfade` and `acrossfade`;
+- locally rasterized title-card and SRT cue graphics composed with `overlay`, without depending on optional FFmpeg text filters;
+- caption modes that preserve a selectable `mov_text` stream, burn styling into the picture, or provide both;
 - explicit output-timeline delays and duration extension for layered media;
 - H.264 video, AAC audio, and fast-start MP4 output.
 
@@ -174,7 +182,7 @@ The web app now presents a usable review boundary rather than a placeholder page
 - select a clip, seek to its exact source in-point, and stop at its out-point;
 - show speed, volume, source range, and clip duration;
 - edit source in/out points, clip order, speed, volume, and caption inclusion;
-- identify v2 candidates, layered clip totals, overlay/audio track counts, and audio assets;
+- identify v2 candidates, layered clip totals, overlay/audio track counts, transitions, title cards, caption treatment, ducking, and audio assets;
 - save immutable numbered plan revisions and invalidate stale previews after an edit;
 - record reviewer notes and show the append-only review audit trail;
 - download the unchanged plan for handoff;
@@ -309,15 +317,15 @@ The following checks were rerun on 17 July 2026 using the repo-pinned Bun 1.3.11
 
 | Check | Result |
 | --- | --- |
-| Agent bridge unit tests | **Pass:** 23 tests across v1/v2 schema migration, overlay/audio filter graphs, setup packaging, FFmpeg profiles, timed-caption grouping, byte ranges, path security, project paths, immutable revisions, review events, and candidate isolation. |
+| Agent bridge unit tests | **Pass:** 27 tests across v1/v2 schema migration, overlays, ducked audio, transitions, production graphics, setup packaging, FFmpeg profiles, timed-caption grouping, byte ranges, path security, project paths, immutable revisions, review events, and candidate isolation. |
 | Agent bridge TypeScript check | **Pass:** `tsc --noEmit`. |
 | Approval/render smoke | **Pass:** approved plan and project record persisted; 2-second generated-media MP4 rendered. |
 | FFmpeg render smoke | **Pass:** 2-second MP4 rendered; FFmpeg exited successfully. |
 | Review-session HTTP smoke | **Pass:** opaque registration, authorized 100-byte range, session captions, selection, revision-specific preview, final approval/render, SHA-256 provenance, and persisted state. |
 | Web model tests | **Pass:** 9 tests covering shared-schema parsing, layered track summaries, timeline editing/reordering, captions, preview gates, and session helpers. |
 | Web production build | **Pass:** Vite client and server builds completed. |
-| Browser workflow | **Pass:** source trim and clip reorder, immutable revision save, reviewer note, preview-before-final gate, final render, seven-event audit trail, persisted hashes, and zero browser warnings/errors. |
-| Multi-track render smoke | **Pass:** generated A-roll, B-roll, and independent music assets compiled through `overlay` plus three-input `amix`; the resulting 4.5-second H.264/AAC MP4 passed FFprobe. |
+| Browser workflow | **Pass:** the production candidate visibly reported one transition, two title cards, styled captions, and smart ducking; selection enabled preview, the exact revision rendered to preview-ready, final approval unlocked, and browser logs contained zero warnings/errors. Earlier revision/final-render checks also remain covered by the HTTP smoke. |
+| Production render smoke | **Pass:** generated A-roll, B-roll, music, SRT captions, a crossfade, intro/outro cards, burned captions, selectable captions, and speech-keyed ducking produced a 4.5-second H.264/AAC/`mov_text` MP4; five extracted frames visually confirmed the title and caption overlays. |
 | Setup packager smoke | **Pass:** workspace-scoped environment, Codex MCP TOML, and setup manifest generated; escaping output rejected. |
 | Real output inspection | **Pass:** FFprobe confirmed the expected video, audio, subtitle, duration, resolution, and frame rate. |
 | MCP tool-list smoke | **Pass:** all nine tools are listed and the capability call succeeds. |
@@ -372,8 +380,8 @@ The MVP deliberately does not yet provide:
 
 - integration with OpenCut's future native Editor API or Rust media core;
 - native OpenCut timeline/project synchronization beyond the new JSON project record;
-- transitions, title/text overlays, keyframes, masks, or effects;
-- smart speech-aware audio ducking and advanced audio automation;
+- general-purpose keyframes, masks, arbitrary effects, or freeform title animation beyond the reusable templates;
+- multi-band mixing and advanced audio automation beyond speech-keyed music ducking;
 - interactive overlay/audio-track mutation in the review UI;
 - formats other than MP4;
 - remote rendering, uploading, or social publishing;
@@ -392,8 +400,8 @@ operational phase and the multi-track/filter-graph foundation:
 4. **Improve transcription and caption alignment — foundation complete.** The new provider-independent word-timestamp schema performs speaker-aware cue grouping, gap/sentence segmentation, caption-safe wrapping, and SRT generation. Real-media provider evaluation and semantic cleanup remain future work.
 5. **Provenance and revision history — complete.** The workflow records immutable plan revisions, source and plan SHA-256 hashes, optional agent/model metadata, reviewer notes, and append-only selection/preview/approval/render events without storing secrets.
 6. **Multi-track schema and filter graph — complete.** V2 adds validated overlay/audio tracks; the renderer compiles positioned overlays and independently delayed/mixed audio while v1 remains supported.
-7. **Add smart audio ducking.** Apply speech-timestamp envelopes to secondary audio without changing the explicit human preview/final gates.
-8. **Add burned-in captions, transitions, and titles.** Build styling on the v2 filter-graph foundation rather than creating a parallel renderer path.
+7. **Smart audio ducking — complete.** Music-role tracks can be routed through a configurable sidechain compressor keyed from the primary dialogue while the explicit preview/final gates remain unchanged.
+8. **Burned-in captions, transitions, and titles — complete.** SRT cues and reusable title templates are rasterized locally, transitions use native FFmpeg crossfades, and caption mode can remain selectable, burned in, or both.
 9. **Formalize the native project adapter.** Map the current plan/project record into OpenCut's Editor API when that upstream contract is stable.
 10. **Add publication as a separate gated workflow.** Keep export/publishing out of the renderer and require an independent destination-specific approval.
 11. **Open a pull request when ready.** Review the cumulative branch as one coherent local-first agent workflow before merging into the fork's `main` branch.

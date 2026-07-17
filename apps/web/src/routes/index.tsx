@@ -675,6 +675,7 @@ function AgentReviewWorkspace() {
                   </div>
                   <p className="mt-1.5 line-clamp-2 text-[10px] leading-relaxed text-zinc-500">{candidate.summary || "Agent-proposed edit"}</p>
                   <p className="mt-2 font-mono text-[9px] text-zinc-600">r{candidate.revision} · {formatTimecode(getTimelineDuration(candidate.plan))} · {candidateTracks.primaryClips + candidateTracks.overlayClips + candidateTracks.audioClips} clips · v{candidate.plan.version}</p>
+                  {candidate.plan.version === "2" ? <p className="mt-1 text-[9px] text-zinc-600">{candidateTracks.transitions} transitions · {candidateTracks.titleCards} titles · {candidateTracks.burnedCaptions ? "styled captions" : "selectable captions"}{candidateTracks.ducking ? " · ducking" : ""}</p> : null}
                 </button>
               )
             })}
@@ -763,7 +764,7 @@ function AgentReviewWorkspace() {
             <div className="m-3 rounded-lg border border-violet-400/20 bg-violet-400/[0.06] p-3">
               <p className="text-[11px] font-medium text-violet-200">Plan validated by MCP bridge</p>
               <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
-                Cuts, overlays, mixed audio, captions, and output settings are ready for human review.
+                Cuts, transitions, title cards, overlays, ducked audio, styled captions, and output settings are ready for human review.
               </p>
             </div>
           </div>
@@ -1060,12 +1061,12 @@ function AgentReviewWorkspace() {
         </aside>
       </section>
 
-      <section className={`${plan.version === "2" ? "h-52" : "h-44"} bg-[#111214]`}>
+      <section className={`${plan.version === "2" ? "h-60" : "h-44"} bg-[#111214]`}>
         <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
           <div className="flex items-center gap-3 text-[10px] text-zinc-500">
             <span className="font-medium uppercase tracking-[0.16em] text-zinc-300">Timeline</span>
             <span>{segments.length} clips</span>
-            {plan.version === "2" ? <span>{trackCounts.overlayTracks} overlay · {trackCounts.audioTracks} audio tracks</span> : null}
+            {plan.version === "2" ? <span>{trackCounts.overlayTracks} overlay · {trackCounts.audioTracks} audio · {trackCounts.transitions} transitions</span> : null}
             <span>{formatTimecode(totalDuration)}</span>
           </div>
           <div className="flex items-center gap-2">
@@ -1094,6 +1095,7 @@ function AgentReviewWorkspace() {
           <div className="border-r border-white/10 pt-7 text-[10px] text-zinc-600">
             <div className="flex h-11 items-center gap-2 border-y border-white/5 px-3"><Film className="size-3" /> Video 1</div>
             {plan.version === "2" ? <div className="flex h-7 items-center gap-2 border-b border-white/5 px-3"><Layers3 className="size-3" /> Layers</div> : null}
+            {plan.version === "2" ? <div className="flex h-7 items-center gap-2 border-b border-white/5 px-3"><Sparkles className="size-3" /> Finish</div> : null}
             <div className="flex h-7 items-center gap-2 border-b border-white/5 px-3"><Captions className="size-3" /> Captions</div>
           </div>
 
@@ -1126,6 +1128,13 @@ function AgentReviewWorkspace() {
                   <Layers3 className="mr-2 size-3" />
                   <span>{trackCounts.overlayClips} overlay clips across {trackCounts.overlayTracks} tracks</span>
                   <span className="ml-auto"><Music2 className="mr-1 inline size-3" />{trackCounts.audioClips} mixed-audio clips</span>
+                </div>
+              ) : null}
+              {plan.version === "2" ? (
+                <div className="mt-1 flex h-7 items-center rounded border border-amber-300/15 bg-amber-300/10 px-3 text-[9px] text-amber-100/80">
+                  <Sparkles className="mr-2 size-3" />
+                  <span>{trackCounts.transitions} transitions · {trackCounts.titleCards} title cards</span>
+                  <span className="ml-auto">{trackCounts.burnedCaptions ? "Styled burn-in captions" : "Selectable captions"}{trackCounts.ducking ? " · Smart ducking" : ""}</span>
                 </div>
               ) : null}
               <button

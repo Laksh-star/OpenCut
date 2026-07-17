@@ -83,20 +83,22 @@ export function buildTimelineSegments(plan: EditPlan): TimelineSegment[] {
 }
 
 export function getTimelineDuration(plan: EditPlan): number {
-  const primaryDuration = buildTimelineSegments(plan).at(-1)?.timelineEnd ?? 0
-  if (plan.version === "1") return primaryDuration
+  const sequentialDuration = buildTimelineSegments(plan).at(-1)?.timelineEnd ?? 0
+  if (plan.version === "1") return sequentialDuration
+  const primaryDuration = sequentialDuration - plan.timeline.transitions.reduce((total, transition) => total + transition.duration, 0)
   const overlayEnds = plan.timeline.overlayTracks.flatMap((track) =>
     track.clips.map((clip) => clip.timelineStart + (clip.sourceEnd - clip.sourceStart) / clip.speed),
   )
   const audioEnds = plan.timeline.audioTracks.flatMap((track) =>
     track.clips.map((clip) => clip.timelineStart + (clip.sourceEnd - clip.sourceStart) / clip.speed),
   )
-  return Math.max(primaryDuration, ...overlayEnds, ...audioEnds)
+  const titleEnds = plan.timeline.titleCards.map((card) => card.timelineStart + card.duration)
+  return Math.max(primaryDuration, ...overlayEnds, ...audioEnds, ...titleEnds)
 }
 
 export function getPlanTrackCounts(plan: EditPlan) {
   if (plan.version === "1") {
-    return { primaryClips: plan.timeline.clips.length, overlayTracks: 0, overlayClips: 0, audioTracks: 0, audioClips: 0 }
+    return { primaryClips: plan.timeline.clips.length, overlayTracks: 0, overlayClips: 0, audioTracks: 0, audioClips: 0, transitions: 0, titleCards: 0, burnedCaptions: false, ducking: false }
   }
   return {
     primaryClips: plan.timeline.clips.length,
@@ -104,6 +106,10 @@ export function getPlanTrackCounts(plan: EditPlan) {
     overlayClips: plan.timeline.overlayTracks.reduce((total, track) => total + track.clips.length, 0),
     audioTracks: plan.timeline.audioTracks.length,
     audioClips: plan.timeline.audioTracks.reduce((total, track) => total + track.clips.length, 0),
+    transitions: plan.timeline.transitions.length,
+    titleCards: plan.timeline.titleCards.length,
+    burnedCaptions: Boolean(plan.timeline.captionStyle && plan.timeline.captionStyle.mode !== "selectable"),
+    ducking: Boolean(plan.timeline.audioMix?.ducking?.enabled),
   }
 }
 

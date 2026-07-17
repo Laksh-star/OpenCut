@@ -115,4 +115,52 @@ describe("editPlanSchema", () => {
       },
     })).toThrow("project canvas");
   });
+
+  test("validates production styling, transitions, and smart ducking", () => {
+    const plan = parseEditPlan({
+      ...validPlan,
+      version: "2",
+      assets: [
+        ...validPlan.assets,
+        { id: "music", path: "media/music.wav", kind: "audio" },
+        { id: "captions", path: "captions.srt", kind: "captions" },
+      ],
+      timeline: {
+        clips: [
+          validPlan.timeline.clips[0],
+          { id: "closing", assetId: "source", sourceStart: 8, sourceEnd: 13 },
+        ],
+        overlayTracks: [],
+        audioTracks: [{
+          id: "music-track",
+          role: "music",
+          clips: [{ id: "music-bed", assetId: "music", timelineStart: 0, sourceStart: 0, sourceEnd: 10 }],
+        }],
+        transitions: [{ id: "main-fade", fromClipId: "opening", toClipId: "closing", duration: 0.5 }],
+        titleCards: [{ id: "outro", template: "outro", timelineStart: 9.5, duration: 1.5, title: "Thanks" }],
+        captionsAssetId: "captions",
+        captionStyle: { mode: "both", preset: "bold" },
+        audioMix: { ducking: { enabled: true } },
+      },
+    });
+    expect(plan.version).toBe("2");
+    if (plan.version !== "2") throw new Error("Expected v2 plan");
+    expect(plan.timeline.audioTracks[0]?.role).toBe("music");
+    expect(getPlanDuration(plan)).toBe(11);
+  });
+
+  test("rejects transitions that do not connect adjacent primary clips", () => {
+    expect(() => parseEditPlan({
+      ...validPlan,
+      version: "2",
+      timeline: {
+        ...validPlan.timeline,
+        clips: [
+          validPlan.timeline.clips[0],
+          { id: "closing", assetId: "source", sourceStart: 8, sourceEnd: 13 },
+        ],
+        transitions: [{ id: "bad", fromClipId: "closing", toClipId: "opening", duration: 0.5 }],
+      },
+    })).toThrow("adjacent primary clips");
+  });
 });

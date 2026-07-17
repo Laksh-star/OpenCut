@@ -1,4 +1,5 @@
 import { getPlanDuration, type EditPlan, type EditPlanV1, type EditPlanV2 } from "./schema.ts";
+import type { PreparedGraphic } from "./graphics.ts";
 
 export type ResolvedAsset = {
   id: string;
@@ -93,16 +94,23 @@ const appendCaptionsAndEncoding = (
   durationLimitSeconds: number | undefined,
   outputPath: string,
 ) => {
-  if (plan.timeline.captionsAssetId) {
-    const captions = assetsById.get(plan.timeline.captionsAssetId);
+  const captionMode = plan.version === "2"
+    ? plan.timeline.captionStyle?.mode ?? "selectable"
+    : "selectable";
+  const captionsAssetId = plan.timeline.captionsAssetId;
+  const includeSelectableCaptions = Boolean(
+    captionsAssetId && (captionMode === "selectable" || captionMode === "both"),
+  );
+  if (includeSelectableCaptions && captionsAssetId) {
+    const captions = assetsById.get(captionsAssetId);
     if (!captions) {
-      throw new Error(`Resolved captions asset missing: ${plan.timeline.captionsAssetId}`);
+      throw new Error(`Resolved captions asset missing: ${captionsAssetId}`);
     }
     args.push("-i", captions.path);
   }
 
   args.push("-map", "[vout]", "-map", "[aout]");
-  if (plan.timeline.captionsAssetId) {
+  if (includeSelectableCaptions) {
     args.push("-map", `${captionsInputIndex}:s:0`, "-c:s", "mov_text");
   }
   args.push(
@@ -189,17 +197,18 @@ const compileV2 = (
   outputPath: string,
   durationLimitSeconds: number | undefined,
   profile: RenderProfile,
+  graphics: PreparedGraphic[],
 ): CompiledEdit => {
   const args = ["-hide_banner", "-loglevel", "error", plan.output.overwrite ? "-y" : "-n"];
   const filterParts: string[] = [];
   let inputIndex = 0;
-  let primaryDuration = 0;
+  const primaryClipDurations: number[] = [];
 
   for (const [index, clip] of plan.timeline.clips.entries()) {
     const asset = assetsById.get(clip.assetId);
     if (!asset) throw new Error(`Resolved asset missing: ${clip.assetId}`);
     const clipDuration = outputDuration(clip);
-    primaryDuration += clipDuration;
+    primaryClipDurations.push(clipDuration);
     pushTrimmedInput(args, clip, asset.path);
     filterParts.push(baseVideoFilters(plan, inputIndex, clip.speed, `pv${index}`));
     if (clip.includeAudio) {
@@ -213,10 +222,35 @@ const compileV2 = (
     inputIndex += 1;
   }
 
-  const primaryInputs = plan.timeline.clips.map((_, index) => `[pv${index}][pa${index}]`).join("");
-  filterParts.push(
-    `${primaryInputs}concat=n=${plan.timeline.clips.length}:v=1:a=1[primaryv][primarya0]`,
-  );
+  let primaryVideoLabel = "pv0";
+  let primaryAudioLabel = "pa0";
+  let primaryDuration = primaryClipDurations[0]!;
+  for (let index = 1; index < plan.timeline.clips.length; index += 1) {
+    const previousClip = plan.timeline.clips[index - 1]!;
+    const clip = plan.timeline.clips[index]!;
+    const transition = plan.timeline.transitions.find(
+      (candidate) => candidate.fromClipId === previousClip.id && candidate.toClipId === clip.id,
+    );
+    const nextVideoLabel = `primaryv${index}`;
+    const nextAudioLabel = `primarya${index}`;
+    if (transition) {
+      const duration = formatNumber(transition.duration);
+      const offset = formatNumber(primaryDuration - transition.duration);
+      filterParts.push(
+        `[${primaryVideoLabel}][pv${index}]xfade=transition=${transition.type}:duration=${duration}:offset=${offset}[${nextVideoLabel}]`,
+        `[${primaryAudioLabel}][pa${index}]acrossfade=d=${duration}:c1=tri:c2=tri[${nextAudioLabel}]`,
+      );
+      primaryDuration += primaryClipDurations[index]! - transition.duration;
+    } else {
+      filterParts.push(
+        `[${primaryVideoLabel}][${primaryAudioLabel}][pv${index}][pa${index}]concat=n=2:v=1:a=1[${nextVideoLabel}][${nextAudioLabel}]`,
+      );
+      primaryDuration += primaryClipDurations[index]!;
+    }
+    primaryVideoLabel = nextVideoLabel;
+    primaryAudioLabel = nextAudioLabel;
+  }
+  filterParts.push(`[${primaryVideoLabel}]null[primaryv]`, `[${primaryAudioLabel}]anull[primarya0]`);
 
   const durationSeconds = getPlanDuration(plan);
   const extension = Math.max(0, durationSeconds - primaryDuration);
@@ -229,7 +263,7 @@ const compileV2 = (
     filterParts.push("[primaryv]null[canvas0]", "[primarya0]anull[primarya]");
   }
 
-  const additionalAudioLabels: string[] = [];
+  const additionalAudioLabels: Array<{ label: string; trackId?: string }> = [];
   let overlayNumber = 0;
   let canvasLabel = "canvas0";
   const overlayTracks = [...plan.timeline.overlayTracks].sort((a, b) => a.zIndex - b.zIndex);
@@ -255,7 +289,7 @@ const compileV2 = (
         filterParts.push(
           clipAudioFilters(inputIndex, clip.speed, clip.volume, audioLabel, clip.timelineStart),
         );
-        additionalAudioLabels.push(audioLabel);
+        additionalAudioLabels.push({ label: audioLabel });
       }
       canvasLabel = nextCanvasLabel;
       overlayNumber += 1;
@@ -273,19 +307,67 @@ const compileV2 = (
       filterParts.push(
         clipAudioFilters(inputIndex, clip.speed, clip.volume, audioLabel, clip.timelineStart),
       );
-      additionalAudioLabels.push(audioLabel);
+      additionalAudioLabels.push({ label: audioLabel, trackId: track.id });
       audioNumber += 1;
       inputIndex += 1;
     }
   }
 
-  filterParts.push(
-    `[${canvasLabel}]trim=duration=${formatNumber(durationSeconds)},setpts=PTS-STARTPTS[vout]`,
-  );
-  if (additionalAudioLabels.length > 0) {
-    const mixInputs = ["primarya", ...additionalAudioLabels].map((label) => `[${label}]`).join("");
+  const sortedGraphics = [...graphics].sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind === "title" ? -1 : 1;
+    return left.timelineStart - right.timelineStart;
+  });
+  for (const [graphicNumber, graphic] of sortedGraphics.entries()) {
+    args.push(
+      "-loop", "1",
+      "-framerate", formatNumber(plan.project.frameRate),
+      "-t", formatNumber(graphic.duration),
+      "-i", graphic.path,
+    );
+    const graphicLabel = `graphic${graphicNumber}`;
+    const nextCanvasLabel = `graphiccanvas${graphicNumber}`;
     filterParts.push(
-      `${mixInputs}amix=inputs=${additionalAudioLabels.length + 1}:duration=longest:` +
+      `[${inputIndex}:v:0]setpts=PTS-STARTPTS+${formatNumber(graphic.timelineStart)}/TB,format=rgba[${graphicLabel}]`,
+      `[${canvasLabel}][${graphicLabel}]overlay=x=0:y=0:eof_action=pass:` +
+        `enable='between(t,${formatNumber(graphic.timelineStart)},${formatNumber(graphic.timelineStart + graphic.duration)})'` +
+        `[${nextCanvasLabel}]`,
+    );
+    canvasLabel = nextCanvasLabel;
+    inputIndex += 1;
+  }
+
+  filterParts.push(`[${canvasLabel}]trim=duration=${formatNumber(durationSeconds)},setpts=PTS-STARTPTS[vout]`);
+  if (additionalAudioLabels.length > 0) {
+    const ducking = plan.timeline.audioMix?.ducking;
+    const targetTrackIds = ducking?.targetTrackIds.length
+      ? new Set(ducking.targetTrackIds)
+      : new Set(plan.timeline.audioTracks.filter((track) => track.role === "music").map((track) => track.id));
+    const duckedLabels = ducking?.enabled
+      ? additionalAudioLabels.filter((entry) => entry.trackId && targetTrackIds.has(entry.trackId))
+      : [];
+    const normalLabels = additionalAudioLabels.filter((entry) => !duckedLabels.includes(entry));
+    const finalMixLabels: string[] = [];
+    if (duckedLabels.length > 0 && ducking) {
+      const duckInputs = duckedLabels.map((entry) => `[${entry.label}]`).join("");
+      if (duckedLabels.length === 1) {
+        filterParts.push(`${duckInputs}anull[duckbus]`);
+      } else {
+        filterParts.push(`${duckInputs}amix=inputs=${duckedLabels.length}:duration=longest:dropout_transition=0:normalize=0[duckbus]`);
+      }
+      filterParts.push(
+        `[primarya]asplit=2[primarymix][speechkey]`,
+        `[duckbus][speechkey]sidechaincompress=threshold=${formatNumber(ducking.threshold)}:` +
+          `ratio=${formatNumber(ducking.ratio)}:attack=${formatNumber(ducking.attackMs)}:` +
+          `release=${formatNumber(ducking.releaseMs)}[duckeda]`,
+      );
+      finalMixLabels.push("primarymix", "duckeda");
+    } else {
+      finalMixLabels.push("primarya");
+    }
+    finalMixLabels.push(...normalLabels.map((entry) => entry.label));
+    const mixInputs = finalMixLabels.map((label) => `[${label}]`).join("");
+    filterParts.push(
+      `${mixInputs}amix=inputs=${finalMixLabels.length}:duration=longest:` +
         `dropout_transition=0:normalize=0,atrim=duration=${formatNumber(durationSeconds)}[aout]`,
     );
   } else {
@@ -314,9 +396,10 @@ export const compileEditPlan = (
   outputPath: string,
   durationLimitSeconds?: number,
   profile: RenderProfile = "preview",
+  graphics: PreparedGraphic[] = [],
 ): CompiledEdit => {
   const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
   return plan.version === "1"
     ? compileV1(plan, assetsById, outputPath, durationLimitSeconds, profile)
-    : compileV2(plan, assetsById, outputPath, durationLimitSeconds, profile);
+    : compileV2(plan, assetsById, outputPath, durationLimitSeconds, profile, graphics);
 };

@@ -1,6 +1,6 @@
 # OpenCut Agent Bridge
 
-This package is the first working seam between AI agents and the OpenCut rewrite. It exposes a local MCP server that can inspect media, validate and save declarative edit plans, upgrade v1 plans to the v2 multi-track contract, compile deterministic FFmpeg filter graphs, and render bounded MP4 previews.
+This package is the first working seam between AI agents and the OpenCut rewrite. It exposes a local MCP server that can inspect media, validate and save declarative edit plans, upgrade v1 plans to the v2 production contract, compile deterministic FFmpeg filter graphs, and render bounded MP4 previews with layered video, speech-keyed music ducking, transitions, title cards, and styled captions.
 
 It does **not** automate the browser, publish media, or claim to be OpenCut's future Editor API. The adapter is deliberately isolated so the FFmpeg preview backend can later be replaced by OpenCut's native API and headless renderer.
 
@@ -38,7 +38,7 @@ With FFmpeg installed, run a complete generated-media render smoke test:
 cd apps/agent-bridge
 bun run smoke:render
 bun run smoke:review
-bun run smoke:multitrack
+bun run smoke:production
 ```
 
 Generate a ready-to-merge Codex MCP configuration and environment file with one command:
@@ -110,13 +110,21 @@ OPENCUT_AGENT_ROOT = "/absolute/path/to/video-workspace"
 7. Ask for human approval before a longer render or any publishing workflow.
 
 Version 1 remains supported unchanged. Version 2 keeps the sequential clips as
-the primary A-roll and adds z-ordered video overlay tracks plus independent
-audio tracks. Overlay clips have explicit output-timeline start, canvas
-position, dimensions, opacity, fit mode, and optional audio. Audio clips have
-independent timing, speed, and volume. The compiler builds shell-free FFmpeg
-`overlay` and `amix` graphs, while SRT/VTT captions remain optional selectable
-MP4 tracks. Smart ducking, transitions, titles, keyframes, and native OpenCut
-project synchronization remain later adapter features.
+the primary A-roll and adds z-ordered video overlay tracks, independent audio
+tracks, adjacent-clip transitions, timed title cards, and styled caption
+settings. Music-role tracks can be lowered automatically from the primary
+speech signal with FFmpeg `sidechaincompress`. Transitions use `xfade` plus
+`acrossfade`; title cards and SRT cue text are rasterized locally into
+transparent PNGs and composed with `overlay`, so burned-in text does not depend
+on optional FFmpeg font or libass filters. Caption mode can be `selectable`,
+`burn-in`, or `both`. Generated graphics stay under
+`.opencut-agent/render-assets/` inside the configured root.
+Burn-in rendering is capped at 200 SRT cues per bounded render.
+
+The full v2 example also documents reusable `intro`, `outro`, and
+`lower-third` templates, five transition styles, caption presets (`clean`,
+`bold`, and `minimal`), audio-track roles, and ducking controls. Keyframes and
+native OpenCut project synchronization remain later adapter features.
 
 The web app's agent review workspace consumes this same schema for visual
 inspection and approval. A reviewer can revise clip ranges, ordering, speed,
@@ -128,9 +136,10 @@ source/plan hashes, reviewer notes, and either the rendered or failed state.
 The bridge remains local-only and never uploads or publishes media.
 
 For v2 candidates, the review workspace identifies plan version, total layered
-clip count, overlay/audio track counts, and all video/audio/caption assets. The
-existing clip inspector continues to revise the primary A-roll; overlay and
-audio tracks are currently agent-authored and read-only during review.
+clip count, overlay/audio track counts, transitions, title cards, caption
+treatment, ducking, and all video/audio/caption assets. The existing clip
+inspector continues to revise the primary A-roll; production styling and
+secondary tracks are currently agent-authored and read-only during review.
 
 ## Candidate review sessions
 

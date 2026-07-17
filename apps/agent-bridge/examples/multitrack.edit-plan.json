@@ -16,9 +16,18 @@
   "timeline": {
     "clips": [
       {
-        "id": "primary-answer",
+        "id": "primary-opening",
         "assetId": "interview",
         "sourceStart": 42,
+        "sourceEnd": 50,
+        "speed": 1,
+        "volume": 1,
+        "includeAudio": true
+      },
+      {
+        "id": "primary-payoff",
+        "assetId": "interview",
+        "sourceStart": 50,
         "sourceEnd": 57,
         "speed": 1,
         "volume": 1,
@@ -50,6 +59,7 @@
     "audioTracks": [
       {
         "id": "music-track",
+        "role": "music",
         "clips": [
           {
             "id": "music-bed",
@@ -62,7 +72,48 @@
         ]
       }
     ],
-    "captionsAssetId": "captions"
+    "transitions": [
+      {
+        "id": "answer-fade",
+        "fromClipId": "primary-opening",
+        "toClipId": "primary-payoff",
+        "type": "fade",
+        "duration": 0.4
+      }
+    ],
+    "titleCards": [
+      {
+        "id": "intro-title",
+        "template": "intro",
+        "timelineStart": 0,
+        "duration": 1.5,
+        "title": "One idea worth remembering",
+        "subtitle": "An OpenCut agent edit"
+      },
+      {
+        "id": "speaker-lower-third",
+        "template": "lower-third",
+        "timelineStart": 2,
+        "duration": 2.5,
+        "title": "Speaker name",
+        "subtitle": "Interview excerpt"
+      }
+    ],
+    "captionsAssetId": "captions",
+    "captionStyle": {
+      "mode": "both",
+      "preset": "bold",
+      "marginV": 48
+    },
+    "audioMix": {
+      "ducking": {
+        "enabled": true,
+        "threshold": 0.04,
+        "ratio": 8,
+        "attackMs": 20,
+        "releaseMs": 250
+      }
+    }
   },
   "output": {
     "path": "renders/layered-highlight.mp4",

@@ -2,6 +2,7 @@ import { access, writeFile } from "node:fs/promises";
 import { posix } from "node:path";
 
 import { compileEditPlan, type RenderProfile } from "./ffmpeg.ts";
+import { preparePlanGraphics } from "./graphics.ts";
 import { alignCaptionWords, captionsToSrt, type CaptionAlignmentOptions } from "./captions.ts";
 import { readEditPlan, writeEditPlan, writeJsonFile } from "./files.ts";
 import { inspectMedia, runProcess } from "./media.ts";
@@ -12,8 +13,8 @@ const MAX_PREVIEW_SECONDS = 300;
 
 export const capabilities = {
   server: "opencut-agent-bridge",
-  version: "0.3.0",
-  adapter: "ffmpeg-multitrack",
+  version: "0.4.0",
+  adapter: "ffmpeg-production-graph",
   editorApiConnected: false,
   operations: [
     "inspect_media",
@@ -31,7 +32,10 @@ export const capabilities = {
     maximumPreviewSeconds: MAX_PREVIEW_SECONDS,
     videoOverlays: true,
     audioMixing: true,
-    smartAudioDucking: false,
+    smartAudioDucking: true,
+    burnedInCaptions: true,
+    transitions: true,
+    titleCards: true,
     publishing: false,
     workspaceRestricted: true,
   },
@@ -145,7 +149,8 @@ export const compilePlanFile = async (
     durationLimitSeconds === undefined
       ? undefined
       : Math.min(MAX_PREVIEW_SECONDS, Math.max(0.1, durationLimitSeconds));
-  return compileEditPlan(plan, assets, outputPath, safeDurationLimit, profile);
+  const graphics = plan.version === "2" ? await preparePlanGraphics(root, plan, assets) : [];
+  return compileEditPlan(plan, assets, outputPath, safeDurationLimit, profile, graphics);
 };
 
 const executeCompiledPlan = async (compiled: ReturnType<typeof compileEditPlan>, renderedSeconds: number) => {
@@ -168,12 +173,15 @@ export const renderPlanValue = async (
   const assets = await resolvePlanAssets(root, plan);
   const outputPath = await resolveOutputPath(root, requestedOutputPath);
   const safeLimit = Math.min(MAX_PREVIEW_SECONDS, Math.max(0.1, durationSeconds));
+  const renderPlan = { ...plan, output: { path: requestedOutputPath, overwrite: true } } as EditPlan;
+  const graphics = renderPlan.version === "2" ? await preparePlanGraphics(root, renderPlan, assets) : [];
   const compiled = compileEditPlan(
-    { ...plan, output: { path: requestedOutputPath, overwrite: true } },
+    renderPlan,
     assets,
     outputPath,
     safeLimit,
     profile,
+    graphics,
   );
   return executeCompiledPlan(compiled, Math.min(timelineDuration, safeLimit));
 };
