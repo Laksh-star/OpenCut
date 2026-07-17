@@ -13,7 +13,9 @@ import {
   Gauge,
   Eye,
   LoaderCircle,
+  Layers3,
   Maximize2,
+  Music2,
   Pause,
   Play,
   RotateCcw,
@@ -32,6 +34,7 @@ import { parseCaptionFile, type CaptionCue } from "#/lib/captions.ts"
 import {
   buildTimelineSegments,
   formatTimecode,
+  getPlanTrackCounts,
   getTimelineDuration,
   movePlanClip,
   parseEditPlan,
@@ -96,6 +99,7 @@ function AgentReviewWorkspace() {
 
   const segments = useMemo(() => buildTimelineSegments(plan), [plan])
   const totalDuration = useMemo(() => getTimelineDuration(plan), [plan])
+  const trackCounts = useMemo(() => getPlanTrackCounts(plan), [plan])
   const selectedSegment =
     segments.find(({ clip }) => clip.id === selectedClipId) ?? segments[0]
   const selectedAsset = plan.assets.find(
@@ -655,6 +659,7 @@ function AgentReviewWorkspace() {
               const selected = candidate.id === reviewSession.selectedCandidateId
               const rendered = candidate.status === "rendered" || candidate.outputExists
               const previewReady = candidateHasCurrentPreview(candidate)
+              const candidateTracks = getPlanTrackCounts(candidate.plan)
               return (
                 <button
                   key={candidate.id}
@@ -669,7 +674,7 @@ function AgentReviewWorkspace() {
                     </span>
                   </div>
                   <p className="mt-1.5 line-clamp-2 text-[10px] leading-relaxed text-zinc-500">{candidate.summary || "Agent-proposed edit"}</p>
-                  <p className="mt-2 font-mono text-[9px] text-zinc-600">r{candidate.revision} · {formatTimecode(getTimelineDuration(candidate.plan))} · {candidate.plan.timeline.clips.length} clips</p>
+                  <p className="mt-2 font-mono text-[9px] text-zinc-600">r{candidate.revision} · {formatTimecode(getTimelineDuration(candidate.plan))} · {candidateTracks.primaryClips + candidateTracks.overlayClips + candidateTracks.audioClips} clips · v{candidate.plan.version}</p>
                 </button>
               )
             })}
@@ -733,7 +738,7 @@ function AgentReviewWorkspace() {
               >
                 <div className="flex items-center gap-2.5">
                   <div className="grid size-9 shrink-0 place-items-center rounded-md bg-gradient-to-br from-zinc-700 to-zinc-900 text-zinc-300">
-                    {asset.kind === "video" ? <Film className="size-4" /> : <Captions className="size-4" />}
+                    {asset.kind === "video" ? <Film className="size-4" /> : asset.kind === "audio" ? <Music2 className="size-4" /> : <Captions className="size-4" />}
                   </div>
                   <div className="min-w-0">
                     <p className="truncate text-xs font-medium">{asset.id}</p>
@@ -758,7 +763,7 @@ function AgentReviewWorkspace() {
             <div className="m-3 rounded-lg border border-violet-400/20 bg-violet-400/[0.06] p-3">
               <p className="text-[11px] font-medium text-violet-200">Plan validated by MCP bridge</p>
               <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
-                Cuts, speed, audio, captions, and output settings are ready for human review.
+                Cuts, overlays, mixed audio, captions, and output settings are ready for human review.
               </p>
             </div>
           </div>
@@ -1055,11 +1060,12 @@ function AgentReviewWorkspace() {
         </aside>
       </section>
 
-      <section className="h-44 bg-[#111214]">
+      <section className={`${plan.version === "2" ? "h-52" : "h-44"} bg-[#111214]`}>
         <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
           <div className="flex items-center gap-3 text-[10px] text-zinc-500">
             <span className="font-medium uppercase tracking-[0.16em] text-zinc-300">Timeline</span>
             <span>{segments.length} clips</span>
+            {plan.version === "2" ? <span>{trackCounts.overlayTracks} overlay · {trackCounts.audioTracks} audio tracks</span> : null}
             <span>{formatTimecode(totalDuration)}</span>
           </div>
           <div className="flex items-center gap-2">
@@ -1087,6 +1093,7 @@ function AgentReviewWorkspace() {
         <div className="grid h-[calc(100%-2.5rem)] grid-cols-[84px_minmax(0,1fr)] overflow-hidden">
           <div className="border-r border-white/10 pt-7 text-[10px] text-zinc-600">
             <div className="flex h-11 items-center gap-2 border-y border-white/5 px-3"><Film className="size-3" /> Video 1</div>
+            {plan.version === "2" ? <div className="flex h-7 items-center gap-2 border-b border-white/5 px-3"><Layers3 className="size-3" /> Layers</div> : null}
             <div className="flex h-7 items-center gap-2 border-b border-white/5 px-3"><Captions className="size-3" /> Captions</div>
           </div>
 
@@ -1114,6 +1121,13 @@ function AgentReviewWorkspace() {
                   </button>
                 ))}
               </div>
+              {plan.version === "2" ? (
+                <div className="mt-1 flex h-7 items-center rounded border border-sky-300/15 bg-sky-400/10 px-3 text-[9px] text-sky-200/80">
+                  <Layers3 className="mr-2 size-3" />
+                  <span>{trackCounts.overlayClips} overlay clips across {trackCounts.overlayTracks} tracks</span>
+                  <span className="ml-auto"><Music2 className="mr-1 inline size-3" />{trackCounts.audioClips} mixed-audio clips</span>
+                </div>
+              ) : null}
               <button
                 className={`mt-1 flex h-7 w-full items-center rounded border px-3 text-left text-[9px] transition disabled:cursor-not-allowed disabled:opacity-50 ${
                   captionsEnabled

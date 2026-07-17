@@ -1,6 +1,6 @@
 # OpenCut Agent Bridge
 
-This package is the first working seam between AI agents and the OpenCut rewrite. It exposes a local MCP server that can inspect media, validate and save declarative edit plans, compile those plans to FFmpeg arguments, and render bounded MP4 previews.
+This package is the first working seam between AI agents and the OpenCut rewrite. It exposes a local MCP server that can inspect media, validate and save declarative edit plans, upgrade v1 plans to the v2 multi-track contract, compile deterministic FFmpeg filter graphs, and render bounded MP4 previews.
 
 It does **not** automate the browser, publish media, or claim to be OpenCut's future Editor API. The adapter is deliberately isolated so the FFmpeg preview backend can later be replaced by OpenCut's native API and headless renderer.
 
@@ -9,6 +9,7 @@ It does **not** automate the browser, publish media, or claim to be OpenCut's fu
 - `opencut_capabilities`
 - `opencut_inspect_media`
 - `opencut_validate_edit_plan`
+- `opencut_upgrade_edit_plan`
 - `opencut_save_edit_plan`
 - `opencut_compile_edit_plan`
 - `opencut_render_preview`
@@ -37,7 +38,19 @@ With FFmpeg installed, run a complete generated-media render smoke test:
 cd apps/agent-bridge
 bun run smoke:render
 bun run smoke:review
+bun run smoke:multitrack
 ```
+
+Generate a ready-to-merge Codex MCP configuration and environment file with one command:
+
+```sh
+apps/agent-bridge/bin/opencut-setup \
+  --root "/absolute/path/to/video-workspace"
+```
+
+The command creates `.opencut-agent/opencut.env`, `codex-mcp.toml`, and a
+machine-readable `setup.json` inside the workspace. It never edits the user's
+global Codex configuration or writes outside `OPENCUT_AGENT_ROOT`.
 
 Start the stdio MCP server directly:
 
@@ -90,13 +103,20 @@ OPENCUT_AGENT_ROOT = "/absolute/path/to/video-workspace"
 
 1. Call `opencut_capabilities`.
 2. Inspect every source with `opencut_inspect_media`.
-3. Create an edit plan matching [`examples/demo.edit-plan.json`](examples/demo.edit-plan.json).
+3. Create a sequential v1 plan matching [`examples/demo.edit-plan.json`](examples/demo.edit-plan.json), or a layered v2 plan matching [`examples/multitrack.edit-plan.json`](examples/multitrack.edit-plan.json).
 4. Validate and save it.
 5. Compile it and review the returned FFmpeg argv.
 6. Render a short preview.
 7. Ask for human approval before a longer render or any publishing workflow.
 
-The MVP timeline is intentionally narrow: sequential video clips, optional per-clip audio control, reframing by fit-and-pad, and optional SRT/VTT captions muxed into MP4. Text, overlays, transitions, keyframes, music mixing, and native OpenCut project synchronization belong in the next adapter version.
+Version 1 remains supported unchanged. Version 2 keeps the sequential clips as
+the primary A-roll and adds z-ordered video overlay tracks plus independent
+audio tracks. Overlay clips have explicit output-timeline start, canvas
+position, dimensions, opacity, fit mode, and optional audio. Audio clips have
+independent timing, speed, and volume. The compiler builds shell-free FFmpeg
+`overlay` and `amix` graphs, while SRT/VTT captions remain optional selectable
+MP4 tracks. Smart ducking, transitions, titles, keyframes, and native OpenCut
+project synchronization remain later adapter features.
 
 The web app's agent review workspace consumes this same schema for visual
 inspection and approval. A reviewer can revise clip ranges, ordering, speed,
@@ -106,6 +126,11 @@ snapshot and invalidates any older preview. Final approval atomically saves
 `renders` directory, invokes the higher-quality FFmpeg profile, and records
 source/plan hashes, reviewer notes, and either the rendered or failed state.
 The bridge remains local-only and never uploads or publishes media.
+
+For v2 candidates, the review workspace identifies plan version, total layered
+clip count, overlay/audio track counts, and all video/audio/caption assets. The
+existing clip inspector continues to revise the primary A-roll; overlay and
+audio tracks are currently agent-authored and read-only during review.
 
 ## Candidate review sessions
 

@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest"
 import {
   buildTimelineSegments,
   formatTimecode,
+  getPlanTrackCounts,
   getTimelineDuration,
   parseEditPlan,
   sampleEditPlan,
@@ -54,5 +55,24 @@ describe("edit plan review model", () => {
     expect(movePlanClip(revised, "fire-analogy", 1).timeline.clips[0]?.id).toBe("human-potential")
     expect(setPlanCaptionsEnabled(revised, false).timeline.captionsAssetId).toBeUndefined()
     expect(setPlanCaptionsEnabled(setPlanCaptionsEnabled(revised, false), true).timeline.captionsAssetId).toBe("captions")
+  })
+
+  test("summarizes v2 overlay and audio tracks", () => {
+    const layered = parseEditPlan({
+      ...sampleEditPlan,
+      version: "2",
+      assets: [
+        ...sampleEditPlan.assets,
+        { id: "overlay", path: "media/overlay.mp4", kind: "video" },
+        { id: "music", path: "media/music.wav", kind: "audio" },
+      ],
+      timeline: {
+        ...sampleEditPlan.timeline,
+        overlayTracks: [{ id: "b-roll", clips: [{ id: "b-roll-1", assetId: "overlay", timelineStart: 3, sourceStart: 0, sourceEnd: 2, width: 640, height: 360 }] }],
+        audioTracks: [{ id: "music", clips: [{ id: "music-1", assetId: "music", timelineStart: 0, sourceStart: 0, sourceEnd: 70 }] }],
+      },
+    })
+    expect(getPlanTrackCounts(layered)).toEqual({ primaryClips: 2, overlayTracks: 1, overlayClips: 1, audioTracks: 1, audioClips: 1 })
+    expect(getTimelineDuration(layered)).toBe(70)
   })
 })

@@ -9,6 +9,7 @@ import {
   inspectWorkspaceMedia,
   renderPlanPreview,
   savePlan,
+  upgradePlan,
   validatePlan,
 } from "./service.ts";
 import { editPlanSchema } from "./schema.ts";
@@ -20,7 +21,7 @@ const jsonResult = (value: unknown) => ({
 
 export const buildServer = () => {
   const server = new McpServer(
-    { name: "opencut-agent-bridge", version: "0.2.0" },
+    { name: "opencut-agent-bridge", version: "0.3.0" },
     {
       instructions:
         "Inspect media before creating an edit plan. Validate, save, and compile the plan before rendering. Rendering only creates a local preview; this server never publishes media.",
@@ -60,6 +61,17 @@ export const buildServer = () => {
       const validated = validatePlan(plan);
       return jsonResult({ valid: true, durationSeconds: validated.durationSeconds });
     }
+  );
+
+  server.registerTool(
+    "opencut_upgrade_edit_plan",
+    {
+      description:
+        "Upgrade a validated v1 edit plan to the backward-compatible v2 multi-track contract without writing files.",
+      inputSchema: z.object({ plan: editPlanSchema }),
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async ({ plan }) => jsonResult(upgradePlan(plan))
   );
 
   server.registerTool(

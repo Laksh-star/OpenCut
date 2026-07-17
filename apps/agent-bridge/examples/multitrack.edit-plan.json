@@ -1,0 +1,71 @@
+{
+  "version": "2",
+  "project": {
+    "name": "Layered interview highlight",
+    "width": 1280,
+    "height": 720,
+    "frameRate": 30,
+    "background": "#000000"
+  },
+  "assets": [
+    { "id": "interview", "path": "media/interview.mp4", "kind": "video" },
+    { "id": "b-roll", "path": "media/b-roll.mp4", "kind": "video" },
+    { "id": "music", "path": "media/music.wav", "kind": "audio" },
+    { "id": "captions", "path": "captions/highlight.srt", "kind": "captions" }
+  ],
+  "timeline": {
+    "clips": [
+      {
+        "id": "primary-answer",
+        "assetId": "interview",
+        "sourceStart": 42,
+        "sourceEnd": 57,
+        "speed": 1,
+        "volume": 1,
+        "includeAudio": true
+      }
+    ],
+    "overlayTracks": [
+      {
+        "id": "b-roll-track",
+        "zIndex": 2,
+        "clips": [
+          {
+            "id": "supporting-visual",
+            "assetId": "b-roll",
+            "timelineStart": 4,
+            "sourceStart": 0,
+            "sourceEnd": 5,
+            "x": 800,
+            "y": 32,
+            "width": 448,
+            "height": 252,
+            "opacity": 0.9,
+            "fit": "cover",
+            "includeAudio": false
+          }
+        ]
+      }
+    ],
+    "audioTracks": [
+      {
+        "id": "music-track",
+        "clips": [
+          {
+            "id": "music-bed",
+            "assetId": "music",
+            "timelineStart": 0,
+            "sourceStart": 0,
+            "sourceEnd": 15,
+            "volume": 0.15
+          }
+        ]
+      }
+    ],
+    "captionsAssetId": "captions"
+  },
+  "output": {
+    "path": "renders/layered-highlight.mp4",
+    "overwrite": false
+  }
+}

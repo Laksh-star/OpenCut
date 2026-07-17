@@ -6,18 +6,19 @@ import { alignCaptionWords, captionsToSrt, type CaptionAlignmentOptions } from "
 import { readEditPlan, writeEditPlan, writeJsonFile } from "./files.ts";
 import { inspectMedia, runProcess } from "./media.ts";
 import { getWorkspaceRoot, resolveInputPath, resolveOutputPath } from "./paths.ts";
-import { parseEditPlan, type EditPlan } from "./schema.ts";
+import { getPlanDuration, parseEditPlan, upgradeEditPlanToV2, type EditPlan } from "./schema.ts";
 
 const MAX_PREVIEW_SECONDS = 300;
 
 export const capabilities = {
   server: "opencut-agent-bridge",
-  version: "0.2.0",
-  adapter: "ffmpeg-preview",
+  version: "0.3.0",
+  adapter: "ffmpeg-multitrack",
   editorApiConnected: false,
   operations: [
     "inspect_media",
     "validate_edit_plan",
+    "upgrade_edit_plan",
     "save_edit_plan",
     "compile_edit_plan",
     "render_preview",
@@ -25,8 +26,12 @@ export const capabilities = {
     "approve_and_render_project",
   ],
   constraints: {
+    schemaVersions: ["1", "2"],
     outputFormat: "mp4",
     maximumPreviewSeconds: MAX_PREVIEW_SECONDS,
+    videoOverlays: true,
+    audioMixing: true,
+    smartAudioDucking: false,
     publishing: false,
     workspaceRestricted: true,
   },
@@ -88,11 +93,13 @@ const resolvePlanAssets = async (root: string, plan: EditPlan) =>
 
 export const validatePlan = (value: unknown) => {
   const plan = parseEditPlan(value);
-  const durationSeconds = plan.timeline.clips.reduce(
-    (total, clip) => total + (clip.sourceEnd - clip.sourceStart) / clip.speed,
-    0
-  );
+  const durationSeconds = getPlanDuration(plan);
   return { plan, durationSeconds };
+};
+
+export const upgradePlan = (value: unknown) => {
+  const plan = upgradeEditPlanToV2(value);
+  return { plan, durationSeconds: getPlanDuration(plan) };
 };
 
 export const savePlan = async (requestedPath: string, value: unknown) => {

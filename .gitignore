@@ -4,6 +4,7 @@ target/
 .env
 .env.*
 !.env.example
+.opencut-agent/
 docs/
 
 # moon runtime cache

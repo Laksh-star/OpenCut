@@ -12,12 +12,14 @@ We extended the OpenCut rewrite with a working, local-first path from an AI agen
 
 The fork now contains:
 
-- an MCP server that lets agents inspect local media, validate and save structured edit plans, build word-timed captions, compile FFmpeg commands, and render previews;
+- an MCP server that lets agents inspect local media, validate/save/upgrade structured edit plans, build word-timed captions, compile FFmpeg filter graphs, and render previews;
 - a browser-based OpenCut review workspace for revising an agent plan, comparing candidates, recording reviewer notes, previewing the current revision, and separately approving the final render;
 - opaque, persistent candidate-review sessions that compare multiple isolated edits without putting plan JSON in the URL;
 - HTTP byte-range streaming for multi-gigabyte local sources, so the reviewer no longer reselects the file in the browser;
 - a loopback-only HTTP bridge that connects the review UI to the renderer;
 - immutable plan revisions, append-only review events, and persistent approval/project records with SHA-256 provenance;
+- a backward-compatible v2 plan with z-ordered video overlays and independently timed/mixed audio tracks;
+- a one-command setup packager that emits workspace-scoped environment, Codex MCP, and machine-readable setup files;
 - automated schema, path-security, rendering, project-persistence, and web-model tests;
 - a completed real-video demonstration using the 1986 Swami Ranganathananda interview;
 - a private Sites visualization explaining the complete behind-the-scenes workflow.
@@ -87,7 +89,7 @@ flowchart LR
 
 ### 4.1 Declarative edit-plan contract
 
-The new version-1 schema defines:
+The original version-1 schema defines:
 
 - project name, width, height, frame rate, and background;
 - video and caption assets;
@@ -98,20 +100,30 @@ The new version-1 schema defines:
 
 Validation rejects duplicate IDs, missing assets, caption/video type mismatches, invalid clip ranges, unsupported output formats, and unsafe values. The web UI imports the same schema directly, avoiding a second incompatible plan model.
 
+The backward-compatible version-2 schema preserves that primary sequential
+A-roll and adds:
+
+- z-ordered overlay tracks with output-timeline start, position, size, opacity, fit mode, and optional source audio;
+- independent audio tracks whose clips have their own start, trim, speed, and volume;
+- audio assets in addition to video and caption assets;
+- duplicate track/clip validation, canvas-bound checks, same-track overlap rejection, and duration calculation across every layer;
+- a deterministic v1-to-v2 upgrade helper and MCP tool.
+
 ### 4.2 MCP agent bridge
 
-The new `apps/agent-bridge` package exposes eight tools:
+The new `apps/agent-bridge` package exposes nine tools:
 
 1. `opencut_capabilities`
 2. `opencut_inspect_media`
 3. `opencut_validate_edit_plan`
-4. `opencut_save_edit_plan`
-5. `opencut_compile_edit_plan`
-6. `opencut_render_preview`
-7. `opencut_approve_and_render_project`
-8. `opencut_build_word_timed_captions`
+4. `opencut_upgrade_edit_plan`
+5. `opencut_save_edit_plan`
+6. `opencut_compile_edit_plan`
+7. `opencut_render_preview`
+8. `opencut_approve_and_render_project`
+9. `opencut_build_word_timed_captions`
 
-The agent can inspect media with FFprobe, calculate output duration, atomically save a plan, convert provider-independent word timestamps into speaker-aware SRT cues, inspect the exact shell-free FFmpeg argument list, render a bounded preview, or persist and render an explicitly approved project.
+The agent can inspect media with FFprobe, calculate layered output duration, upgrade v1 plans to v2 without losing the primary timeline, atomically save a plan, convert provider-independent word timestamps into speaker-aware SRT cues, inspect the exact shell-free FFmpeg argument list, render a bounded preview, or persist and render an explicitly approved project.
 
 ### 4.3 Safe local execution boundary
 
@@ -126,6 +138,11 @@ The bridge was designed as a constrained local adapter:
 - only MP4 output is supported in this MVP;
 - no upload or publishing operation exists.
 
+The new `opencut-setup` command resolves the workspace root and emits a private
+environment file, Codex MCP TOML snippet, and setup manifest inside that root.
+It refuses escaping output paths and deliberately does not mutate global Codex
+configuration.
+
 ### 4.4 FFmpeg compilation and rendering
 
 The compiler converts sequential plan clips into deterministic FFmpeg arguments. It supports:
@@ -138,6 +155,9 @@ The compiler converts sequential plan clips into deterministic FFmpeg arguments.
 - target frame-rate normalization;
 - sequential audio/video concatenation;
 - optional captions muxed as `mov_text`;
+- v2 video overlays ordered by track z-index and positioned on the project canvas;
+- v2 audio from video overlays plus dedicated audio tracks mixed with `amix`;
+- explicit output-timeline delays and duration extension for layered media;
 - H.264 video, AAC audio, and fast-start MP4 output.
 
 The FFmpeg adapter is an implementation detail behind the plan contract. It is intended to be swapped for OpenCut's native editor/headless renderer when those APIs are ready.
@@ -154,6 +174,7 @@ The web app now presents a usable review boundary rather than a placeholder page
 - select a clip, seek to its exact source in-point, and stop at its out-point;
 - show speed, volume, source range, and clip duration;
 - edit source in/out points, clip order, speed, volume, and caption inclusion;
+- identify v2 candidates, layered clip totals, overlay/audio track counts, and audio assets;
 - save immutable numbered plan revisions and invalidate stale previews after an edit;
 - record reviewer notes and show the append-only review audit trail;
 - download the unchanged plan for handoff;
@@ -161,6 +182,10 @@ The web app now presents a usable review boundary rather than a placeholder page
 - render a fast revision-specific preview before final approval is available;
 - show review, previewing, preview-ready, rendering, rendered, retry, and failure states;
 - send the current previewed revision to the high-quality final renderer through **Approve final**.
+
+Primary A-roll controls remain editable for both schema versions. Overlay and
+audio tracks are agent-authored and read-only in this first v2 review surface;
+the compiled preview is the approval artifact for the complete layered plan.
 
 ### 4.6 Approval, persistence, and local HTTP bridge
 
@@ -284,16 +309,18 @@ The following checks were rerun on 17 July 2026 using the repo-pinned Bun 1.3.11
 
 | Check | Result |
 | --- | --- |
-| Agent bridge unit tests | **Pass:** 17 tests across schema, FFmpeg profiles, timed-caption grouping, byte ranges, path security, project paths, immutable revisions, review events, and candidate isolation. |
+| Agent bridge unit tests | **Pass:** 23 tests across v1/v2 schema migration, overlay/audio filter graphs, setup packaging, FFmpeg profiles, timed-caption grouping, byte ranges, path security, project paths, immutable revisions, review events, and candidate isolation. |
 | Agent bridge TypeScript check | **Pass:** `tsc --noEmit`. |
 | Approval/render smoke | **Pass:** approved plan and project record persisted; 2-second generated-media MP4 rendered. |
 | FFmpeg render smoke | **Pass:** 2-second MP4 rendered; FFmpeg exited successfully. |
 | Review-session HTTP smoke | **Pass:** opaque registration, authorized 100-byte range, session captions, selection, revision-specific preview, final approval/render, SHA-256 provenance, and persisted state. |
-| Web model tests | **Pass:** 8 tests covering shared-schema parsing, timeline editing/reordering, captions, preview gates, and session helpers. |
+| Web model tests | **Pass:** 9 tests covering shared-schema parsing, layered track summaries, timeline editing/reordering, captions, preview gates, and session helpers. |
 | Web production build | **Pass:** Vite client and server builds completed. |
 | Browser workflow | **Pass:** source trim and clip reorder, immutable revision save, reviewer note, preview-before-final gate, final render, seven-event audit trail, persisted hashes, and zero browser warnings/errors. |
+| Multi-track render smoke | **Pass:** generated A-roll, B-roll, and independent music assets compiled through `overlay` plus three-input `amix`; the resulting 4.5-second H.264/AAC MP4 passed FFprobe. |
+| Setup packager smoke | **Pass:** workspace-scoped environment, Codex MCP TOML, and setup manifest generated; escaping output rejected. |
 | Real output inspection | **Pass:** FFprobe confirmed the expected video, audio, subtitle, duration, resolution, and frame rate. |
-| MCP tool-list smoke | **Pass:** all eight tools are listed and the capability call succeeds. |
+| MCP tool-list smoke | **Pass:** all nine tools are listed and the capability call succeeds. |
 
 ## 9. What each component is responsible for
 
@@ -345,9 +372,9 @@ The MVP deliberately does not yet provide:
 
 - integration with OpenCut's future native Editor API or Rust media core;
 - native OpenCut timeline/project synchronization beyond the new JSON project record;
-- transitions, overlays, titles, keyframes, masks, or effects;
-- music mixing or advanced multi-track audio;
-- multi-track or non-sequential timeline composition;
+- transitions, title/text overlays, keyframes, masks, or effects;
+- smart speech-aware audio ducking and advanced audio automation;
+- interactive overlay/audio-track mutation in the review UI;
 - formats other than MP4;
 - remote rendering, uploading, or social publishing;
 - multi-user or remote authentication beyond the loopback-only local boundary and per-process session tokens;
@@ -356,17 +383,20 @@ The MVP deliberately does not yet provide:
 
 ## 11. Recommended next development steps
 
-The July 17 stabilization pass completed three of the first five roadmap items
-and established the provider-independent base for the fourth:
+The July 17 stabilization and schema-expansion passes completed the original
+operational phase and the multi-track/filter-graph foundation:
 
 1. **Editable review controls — complete.** The reviewer can adjust source in/out points, ordering, speed, volume, and caption inclusion. Saving creates immutable numbered revision snapshots and invalidates older previews.
-2. **Formalize the project adapter.** Map the current plan/project record into OpenCut's native Editor API when it lands.
+2. **Setup/MCP packager — complete.** `opencut-setup` generates workspace-scoped environment, Codex MCP, and setup-manifest files with path-boundary tests.
 3. **Preview versus final-render modes — complete.** Fast `ultrafast`/CRF 32 previews are revision-specific. Final approval remains locked until the current revision has a preview, then uses the separate `medium`/CRF 20 profile.
 4. **Improve transcription and caption alignment — foundation complete.** The new provider-independent word-timestamp schema performs speaker-aware cue grouping, gap/sentence segmentation, caption-safe wrapping, and SRT generation. Real-media provider evaluation and semantic cleanup remain future work.
 5. **Provenance and revision history — complete.** The workflow records immutable plan revisions, source and plan SHA-256 hashes, optional agent/model metadata, reviewer notes, and append-only selection/preview/approval/render events without storing secrets.
-6. **Expand the plan schema carefully.** Introduce titles, transitions, music, and richer layout alongside validation, review UI, and renderer tests.
-7. **Add publication as a separate gated workflow.** Keep export/publishing out of the renderer and require an independent destination-specific approval.
-8. **Open a pull request when ready.** Review the cumulative branch as one coherent local-first agent workflow before merging into the fork's `main` branch.
+6. **Multi-track schema and filter graph — complete.** V2 adds validated overlay/audio tracks; the renderer compiles positioned overlays and independently delayed/mixed audio while v1 remains supported.
+7. **Add smart audio ducking.** Apply speech-timestamp envelopes to secondary audio without changing the explicit human preview/final gates.
+8. **Add burned-in captions, transitions, and titles.** Build styling on the v2 filter-graph foundation rather than creating a parallel renderer path.
+9. **Formalize the native project adapter.** Map the current plan/project record into OpenCut's Editor API when that upstream contract is stable.
+10. **Add publication as a separate gated workflow.** Keep export/publishing out of the renderer and require an independent destination-specific approval.
+11. **Open a pull request when ready.** Review the cumulative branch as one coherent local-first agent workflow before merging into the fork's `main` branch.
 
 ## 12. Overall outcome
 

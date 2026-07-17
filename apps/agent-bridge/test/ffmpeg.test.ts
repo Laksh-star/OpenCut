@@ -71,4 +71,65 @@ describe("compileEditPlan", () => {
     );
     expect(compiled.args.join(" ")).toContain("anullsrc");
   });
+
+  test("compiles v2 overlays and independently mixed audio", () => {
+    const plan = parseEditPlan({
+      version: "2",
+      project: { name: "Layered", width: 1_280, height: 720, frameRate: 30 },
+      assets: [
+        { id: "source", path: "media/source.mp4", kind: "video" },
+        { id: "overlay", path: "media/overlay.mp4", kind: "video" },
+        { id: "music", path: "media/music.wav", kind: "audio" },
+      ],
+      timeline: {
+        clips: [{ id: "base", assetId: "source", sourceStart: 0, sourceEnd: 5 }],
+        overlayTracks: [{
+          id: "b-roll",
+          zIndex: 2,
+          clips: [{
+            id: "overlay-clip",
+            assetId: "overlay",
+            timelineStart: 1,
+            sourceStart: 0,
+            sourceEnd: 2,
+            x: 640,
+            y: 0,
+            width: 640,
+            height: 360,
+            opacity: 0.8,
+            fit: "cover",
+            includeAudio: true,
+          }],
+        }],
+        audioTracks: [{
+          id: "music-track",
+          clips: [{
+            id: "music-clip",
+            assetId: "music",
+            timelineStart: 0.5,
+            sourceStart: 0,
+            sourceEnd: 6,
+            volume: 0.2,
+          }],
+        }],
+      },
+      output: { path: "renders/layered.mp4", overwrite: true },
+    });
+
+    const compiled = compileEditPlan(
+      plan,
+      [
+        { id: "source", path: "/workspace/media/source.mp4", kind: "video" },
+        { id: "overlay", path: "/workspace/media/overlay.mp4", kind: "video" },
+        { id: "music", path: "/workspace/media/music.wav", kind: "audio" },
+      ],
+      "/workspace/renders/layered.mp4",
+    );
+    const argv = compiled.args.join(" ");
+    expect(compiled.durationSeconds).toBe(6.5);
+    expect(argv).toContain("overlay=x=640:y=0");
+    expect(argv).toContain("amix=inputs=3");
+    expect(argv).toContain("adelay=500|500");
+    expect(argv).toContain("colorchannelmixer=aa=0.8");
+  });
 });

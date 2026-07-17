@@ -18,12 +18,16 @@ const capabilityResult = await client.callTool({
   arguments: {},
 });
 
-if (tools.tools.length !== 8) {
-  throw new Error(`Expected 8 tools, received ${tools.tools.length}`);
+if (tools.tools.length !== 9) {
+  throw new Error(`Expected 9 tools, received ${tools.tools.length}`);
 }
 
 if (!tools.tools.some((tool) => tool.name === "opencut_build_word_timed_captions")) {
   throw new Error("Expected opencut_build_word_timed_captions to be listed");
+}
+
+if (!tools.tools.some((tool) => tool.name === "opencut_upgrade_edit_plan")) {
+  throw new Error("Expected opencut_upgrade_edit_plan to be listed");
 }
 
 console.log(
