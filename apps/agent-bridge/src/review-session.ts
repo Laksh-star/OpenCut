@@ -32,6 +32,7 @@ export const reviewEventTypeSchema = z.enum([
   "reviewer-note-added",
   "batch-approved",
   "batch-completed",
+  "export-package-created",
   "final-approved",
   "final-rendered",
   "final-failed",
@@ -71,6 +72,34 @@ export const renderBatchSchema = z.object({
   items: z.array(renderBatchItemSchema).min(1).max(20),
 });
 
+export const exportPackageCandidateSchema = z.object({
+  candidateId: identifier,
+  revision: z.number().int().positive(),
+  title: z.string().min(1).max(160),
+  durationSeconds: z.number().min(0),
+  outputPath: z.string().min(1),
+  packagedOutputPath: z.string().min(1),
+  outputBytes: z.number().int().min(0),
+  approvedEditPlanPath: z.string().min(1).optional(),
+  projectRecordPath: z.string().min(1).optional(),
+  captionsPath: z.string().min(1).optional(),
+  contactSheetPath: z.string().min(1).optional(),
+});
+
+export const exportPackageSchema = z.object({
+  version: z.literal("1"),
+  id: z.string().uuid(),
+  reviewSessionId: identifier,
+  title: z.string().min(1).max(160),
+  status: z.enum(["created", "partial"]),
+  createdAt: timestamp,
+  packagePath: z.string().min(1),
+  manifestPath: z.string().min(1),
+  summaryPath: z.string().min(1),
+  candidates: z.array(exportPackageCandidateSchema).min(1).max(20),
+  warnings: z.array(z.string().max(2_000)).default([]),
+});
+
 export const reviewSessionSchema = z.object({
   version: z.literal("1"),
   id: identifier,
@@ -96,6 +125,7 @@ export const reviewSessionSchema = z.object({
   reviewerNotes: z.array(reviewerNoteSchema).default([]),
   events: z.array(reviewEventSchema).default([]),
   renderBatches: z.array(renderBatchSchema).default([]),
+  exportPackages: z.array(exportPackageSchema).default([]),
   createdBy: z.object({
     agent: z.string().min(1).max(120).optional(),
     model: z.string().min(1).max(160).optional(),

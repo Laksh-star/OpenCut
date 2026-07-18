@@ -18,8 +18,8 @@ const capabilityResult = await client.callTool({
   arguments: {},
 });
 
-if (tools.tools.length !== 9) {
-  throw new Error(`Expected 9 tools, received ${tools.tools.length}`);
+if (tools.tools.length !== 11) {
+  throw new Error(`Expected 11 tools, received ${tools.tools.length}`);
 }
 
 if (!tools.tools.some((tool) => tool.name === "opencut_build_word_timed_captions")) {
@@ -28,6 +28,14 @@ if (!tools.tools.some((tool) => tool.name === "opencut_build_word_timed_captions
 
 if (!tools.tools.some((tool) => tool.name === "opencut_upgrade_edit_plan")) {
   throw new Error("Expected opencut_upgrade_edit_plan to be listed");
+}
+
+if (!tools.tools.some((tool) => tool.name === "opencut_preflight_review_session")) {
+  throw new Error("Expected opencut_preflight_review_session to be listed");
+}
+
+if (!tools.tools.some((tool) => tool.name === "opencut_create_export_package")) {
+  throw new Error("Expected opencut_create_export_package to be listed");
 }
 
 console.log(

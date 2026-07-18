@@ -19,4 +19,3 @@ fi
 
 echo "OpenCut agent HTTP bridge requires Bun or a Node.js release with TypeScript stripping." >&2
 exit 1
-

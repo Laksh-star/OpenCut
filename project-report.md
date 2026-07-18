@@ -1,6 +1,6 @@
 # OpenCut AI-Agent Extension Project Report
 
-**Status date:** 17 July 2026
+**Status date:** 18 July 2026
 **Fork:** [Laksh-star/OpenCut](https://github.com/Laksh-star/OpenCut)
 **Upstream:** [OpenCut-app/OpenCut](https://github.com/OpenCut-app/OpenCut)
 **Working branch:** `codex/agent-bridge-mvp`
@@ -19,6 +19,9 @@ The fork now contains:
 - a loopback-only HTTP bridge that connects the review UI to the renderer;
 - immutable plan revisions, append-only review events, and persistent approval/project records with SHA-256 provenance;
 - a backward-compatible v2 production plan with z-ordered video overlays, independently timed/mixed audio, speech-keyed music ducking, transitions, title cards, and styled burned-in captions;
+- backend-enforced preflight checks before preview, final, batch, and export actions;
+- reusable production presets for caption/title/transition/ducking treatment;
+- local export packages that bundle rendered MP4s, approved plans, project records, captions, contact sheets, a manifest, and a summary without copying the original large source video;
 - a one-command setup packager that emits workspace-scoped environment, Codex MCP, and machine-readable setup files;
 - automated schema, path-security, rendering, project-persistence, and web-model tests;
 - a completed real-video demonstration using the 1986 Swami Ranganathananda interview;
@@ -56,10 +59,10 @@ Four completed extension commits were already present on the pushed feature bran
 | `7a16bcf5` | Connect plan approval to local rendering | Added the local HTTP approval bridge, project persistence, approval UI states, and end-to-end approval/render smoke coverage. |
 | `43d34448` | Add interactive review playback controls | Added URL plan loading, source-accurate playback, seek/scrub controls, caption parsing, and caption overlays. |
 
-The current milestone adds review-session registration and persistence,
-isolated candidate projects, secure local media/caption routes, comparison UI,
-a one-command launcher, and expanded test coverage. Exact branch totals should
-be read from Git rather than treated as a fixed figure in this cumulative report.
+The current July 18 milestone adds preflight enforcement, production presets,
+local export packaging, persistent export-package metadata, MCP exposure for the
+new primitives, and expanded test/smoke coverage. Exact branch totals should be
+read from Git rather than treated as a fixed figure in this cumulative report.
 
 ## 4. Architecture delivered
 
@@ -115,7 +118,7 @@ A-roll and adds:
 
 ### 4.2 MCP agent bridge
 
-The new `apps/agent-bridge` package exposes nine tools:
+The new `apps/agent-bridge` package exposes eleven tools:
 
 1. `opencut_capabilities`
 2. `opencut_inspect_media`
@@ -124,10 +127,12 @@ The new `apps/agent-bridge` package exposes nine tools:
 5. `opencut_save_edit_plan`
 6. `opencut_compile_edit_plan`
 7. `opencut_render_preview`
-8. `opencut_approve_and_render_project`
-9. `opencut_build_word_timed_captions`
+8. `opencut_build_word_timed_captions`
+9. `opencut_preflight_review_session`
+10. `opencut_approve_and_render_project`
+11. `opencut_create_export_package`
 
-The agent can inspect media with FFprobe, calculate layered output duration, upgrade v1 plans to v2 without losing the primary timeline, atomically save a plan, convert provider-independent word timestamps into speaker-aware SRT cues, inspect the exact shell-free FFmpeg argument list, render a bounded preview, or persist and render an explicitly approved project.
+The agent can inspect media with FFprobe, calculate layered output duration, upgrade v1 plans to v2 without losing the primary timeline, atomically save a plan, convert provider-independent word timestamps into speaker-aware SRT cues, inspect the exact shell-free FFmpeg argument list, render a bounded preview, preflight a saved review session before gated actions, persist and render an explicitly approved project, or package rendered candidates for local handoff.
 
 ### 4.3 Safe local execution boundary
 
@@ -183,17 +188,21 @@ The web app now presents a usable review boundary rather than a placeholder page
 - show speed, volume, source range, and clip duration;
 - edit source in/out points, clip order, speed, volume, and caption inclusion;
 - identify v2 candidates, layered clip totals, overlay/audio track counts, transitions, title cards, caption treatment, ducking, and audio assets;
+- apply production presets across caption styling, title colors, transition treatment, and ducking;
 - save immutable numbered plan revisions and invalidate stale previews after an edit;
+- display backend preflight results for the active saved revision before preview or final approval;
 - record reviewer notes and show the append-only review audit trail;
 - download the unchanged plan for handoff;
 - detect whether the local render bridge is online;
 - render a fast revision-specific preview before final approval is available;
 - show review, previewing, preview-ready, rendering, rendered, retry, and failure states;
 - send the current previewed revision to the high-quality final renderer through **Approve final**.
+- create a local export package for rendered candidates.
 
 Primary A-roll controls remain editable for both schema versions. Overlay and
-audio tracks are agent-authored and read-only in this first v2 review surface;
-the compiled preview is the approval artifact for the complete layered plan.
+audio tracks are agent-authored, and their existing renderer-backed fields are
+editable in the v2 review surface. The compiled preview remains the approval
+artifact for the complete layered plan.
 
 ### 4.6 Approval, persistence, and local HTTP bridge
 
@@ -266,6 +275,34 @@ alignment, font size, colors, margins, and background opacity; and smart audio
 ducking enablement, threshold, ratio, attack, and release. These edits still
 save through the immutable revision endpoint and invalidate the previous
 preview before final approval can proceed.
+
+### 4.9 Preflight, presets, and export handoff
+
+The July 18 pass turns the review flow from “render after approval” into a
+more complete production handoff loop:
+
+- backend preflight checks now inspect saved review-session candidates before
+  preview, single final, batch final, or export actions;
+- preflight blocks missing assets, busy/rendered candidates where inappropriate,
+  stale or missing previews before final render, duplicate final output paths,
+  and non-rendered candidates before export;
+- preflight warnings surface failed prior actions, render-limit truncation risk,
+  and timing issues that should be reviewed but do not necessarily block;
+- final and batch endpoints enforce preflight server-side, so the UI cannot
+  bypass the safety gate;
+- the review UI displays the active candidate's preflight status and explains
+  why a preview or final render is blocked;
+- three practical production presets apply coordinated caption style,
+  transition, title-card color, and ducking changes to existing v2 plans:
+  `clean-interview`, `bold-social`, and `minimal-archive`;
+- rendered candidates can be packaged through a token-gated local export action;
+- export packages are written under `exports/` beside the review manifest and
+  include copied rendered MP4s, approved edit plans, project records, captions,
+  generated contact sheets when FFmpeg can create them, `manifest.json`, and
+  `summary.md`;
+- export package metadata is persisted in `review-session.json` and the audit
+  trail records `export-package-created`;
+- the original source video is not copied into export packages.
 
 ## 5. Real-video demonstration completed
 
@@ -342,23 +379,25 @@ The Sites project is currently private and owner-only. The published page preser
 
 ## 8. Verification record
 
-The following checks were rerun on 17 July 2026 using the repo-pinned Bun 1.3.11 executable:
+The following checks were rerun on 18 July 2026 using the repo-local Bun 1.3.11 executable and local web tool shims:
 
 | Check | Result |
 | --- | --- |
-| Agent bridge unit tests | **Pass:** 28 tests across v1/v2 schema migration, overlays, ducked audio, transitions, production graphics, setup packaging, FFmpeg profiles, timed-caption grouping, byte ranges, path security, project paths, immutable revisions, review events, candidate isolation, and batch metadata persistence. |
+| Agent bridge unit tests | **Pass:** 30 tests across v1/v2 schema migration, overlays, ducked audio, transitions, production graphics, setup packaging, FFmpeg profiles, timed-caption grouping, byte ranges, path security, project paths, immutable revisions, review events, candidate isolation, batch metadata persistence, preflight blockers, and export package creation. |
 | Agent bridge TypeScript check | **Pass:** `tsc --noEmit`. |
+| Agent bridge build | **Pass:** Bun build generated the Node-target bundle. |
 | Approval/render smoke | **Pass:** approved plan and project record persisted; 2-second generated-media MP4 rendered. |
 | FFmpeg render smoke | **Pass:** 2-second MP4 rendered; FFmpeg exited successfully. |
-| Review-session HTTP smoke | **Pass:** opaque registration, authorized 100-byte range, session captions, two candidate selections, two revision-specific previews, one explicit batch approval, two final renders, SHA-256 provenance, persisted batch state, and audit events. |
-| Web model tests | **Pass:** 10 tests covering shared-schema parsing, layered track summaries, timeline editing/reordering, v2 production-control helpers, captions, preview gates, and session helpers. |
+| Review-session HTTP smoke | **Pass:** opaque registration, authorized 100-byte range, session captions, two candidate selections, two revision-specific previews, batch preflight, one explicit batch approval, two final renders, SHA-256 provenance, persisted batch state, export package creation, and audit state. |
+| Web model tests | **Pass:** 11 tests covering shared-schema parsing, layered track summaries, timeline editing/reordering, v2 production-control helpers, production presets, captions, preview gates, and session helpers. |
+| Web TypeScript check | **Pass:** `tsc --noEmit`. |
 | Web production build | **Pass:** Vite client and server builds completed. |
 | Browser workflow | **Pass:** a local v2 review session displayed editable overlay, audio mix, transition, title-card, caption-style, and ducking controls; both preview-ready candidates were added to the batch queue; **Approve batch** rendered both candidates to `rendered`; browser logs contained zero warnings/errors. |
 | Production render smoke | **Pass:** generated A-roll, B-roll, music, SRT captions, a crossfade, intro/outro cards, burned captions, selectable captions, and speech-keyed ducking produced a 4.5-second H.264/AAC/`mov_text` MP4; five extracted frames visually confirmed the title and caption overlays. |
 | Setup packager smoke | **Pass:** workspace-scoped environment, Codex MCP TOML, and setup manifest generated; escaping output rejected. |
 | Real output inspection | **Pass:** FFprobe confirmed the expected video, audio, subtitle, duration, resolution, and frame rate. |
-| MCP tool-list smoke | **Pass:** all nine MCP tools are listed, `opencut_capabilities` reports bridge version `0.5.0`, and capability flags include batch rendering plus production-layer editing. |
-| Reusable skill validation | **Pass:** `opencut-producer` skill metadata validates; bundled session validator accepts queued candidates and render-batch metadata using a synthetic fixture. |
+| MCP tool-list smoke | **Pass:** all eleven MCP tools are listed, `opencut_capabilities` reports bridge version `0.6.0`, and capability flags include batch rendering, production-layer editing, preflight checks, and export packages. |
+| Reusable skill validation | **Pass:** `opencut-producer` frontmatter and OpenAI metadata parse; bundled session validator accepts render-batch and export-package metadata using a synthetic fixture. The system `quick_validate.py` script could not run because PyYAML is not installed in the available Python runtimes. |
 
 ## 9. What each component is responsible for
 
@@ -370,7 +409,8 @@ The following checks were rerun on 17 July 2026 using the repo-pinned Bun 1.3.11
 - creates the declarative edit plan and captions;
 - invokes bridge tools and explains the proposed edit;
 - produces provider-independent word-timed caption cues when transcript timing is available;
-- prepares verification and delivery artifacts.
+- prepares verification and delivery artifacts;
+- can call preflight and export-package tools for saved review sessions.
 
 ### OpenCut review workspace
 
@@ -380,6 +420,8 @@ The following checks were rerun on 17 July 2026 using the repo-pinned Bun 1.3.11
 - preserves numbered revisions, reviewer notes, and the audit trail;
 - requires a successful preview for the current revision before final approval;
 - provides explicit single-final and batch approval boundaries;
+- displays preflight blockers and warnings for the next gated action;
+- triggers local export packages for rendered candidates;
 - reports bridge and render state.
 
 ### Agent bridge
@@ -390,7 +432,8 @@ The following checks were rerun on 17 July 2026 using the repo-pinned Bun 1.3.11
 - compiles deterministic renderer arguments;
 - derives speaker-aware SRT cues from timed words;
 - records plan/source hashes and agent metadata without storing credentials;
-- connects approved single or batch UI actions to local execution.
+- connects approved single or batch UI actions to local execution;
+- enforces preflight checks and creates local handoff packages.
 
 ### FFmpeg / FFprobe
 
@@ -412,7 +455,7 @@ The MVP deliberately does not yet provide:
 - native OpenCut timeline/project synchronization beyond the new JSON project record;
 - general-purpose keyframes, masks, arbitrary effects, or freeform title animation beyond the reusable templates;
 - multi-band mixing and advanced audio automation beyond speech-keyed music ducking;
-- interactive overlay/audio-track mutation in the review UI;
+- creating or deleting new overlay/audio tracks directly in the review UI; current controls edit existing agent-authored v2 fields;
 - formats other than MP4;
 - remote rendering, uploading, or social publishing;
 - multi-user or remote authentication beyond the loopback-only local boundary and per-process session tokens;
@@ -421,8 +464,9 @@ The MVP deliberately does not yet provide:
 
 ## 11. Recommended next development steps
 
-The July 17 stabilization and schema-expansion passes completed the original
-operational phase and the multi-track/filter-graph foundation:
+The July 17–18 stabilization, schema-expansion, batch, and production-handoff
+passes completed the original operational phase and the multi-track/filter-graph
+foundation:
 
 1. **Editable review controls — complete.** The reviewer can adjust source in/out points, ordering, speed, volume, and caption inclusion. Saving creates immutable numbered revision snapshots and invalidates older previews.
 2. **Setup/MCP packager — complete.** `opencut-setup` generates workspace-scoped environment, Codex MCP, and setup-manifest files with path-boundary tests.
@@ -432,9 +476,13 @@ operational phase and the multi-track/filter-graph foundation:
 6. **Multi-track schema and filter graph — complete.** V2 adds validated overlay/audio tracks; the renderer compiles positioned overlays and independently delayed/mixed audio while v1 remains supported.
 7. **Smart audio ducking — complete.** Music-role tracks can be routed through a configurable sidechain compressor keyed from the primary dialogue while the explicit preview/final gates remain unchanged.
 8. **Burned-in captions, transitions, and titles — complete.** SRT cues and reusable title templates are rasterized locally, transitions use native FFmpeg crossfades, and caption mode can remain selectable, burned in, or both.
-9. **Formalize the native project adapter.** Map the current plan/project record into OpenCut's Editor API when that upstream contract is stable.
-10. **Add publication as a separate gated workflow.** Keep export/publishing out of the renderer and require an independent destination-specific approval.
-11. **Open a pull request when ready.** Review the cumulative branch as one coherent local-first agent workflow before merging into the fork's `main` branch.
+9. **Batch review and render queue — complete.** Preview-approved candidates can be batch-selected, rendered sequentially, persisted per item, and retried selectively on failure.
+10. **Production presets and preflight — complete.** The UI offers coordinated style presets, and the backend enforces preflight before preview, final, batch, and export actions.
+11. **Local export package — complete.** Rendered candidates can be bundled into a local handoff package with outputs, metadata, captions, contact sheets, manifest, and summary.
+12. **Formalize the native project adapter.** Map the current plan/project record into OpenCut's Editor API when that upstream contract is stable.
+13. **Add track creation/deletion and keyframes.** The reviewer can edit existing v2 layers today; adding new layers and keyframed motion/effects would move the UI closer to a true OpenCut-native editor.
+14. **Add publication as a separate gated workflow.** Keep export/publishing out of the renderer and require an independent destination-specific approval.
+15. **Open a pull request when ready.** Review the cumulative branch as one coherent local-first agent workflow before merging into the fork's `main` branch.
 
 ## 12. Overall outcome
 

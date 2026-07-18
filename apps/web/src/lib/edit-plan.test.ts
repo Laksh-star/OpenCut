@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest"
 
 import {
+  applyProductionPreset,
   buildTimelineSegments,
   formatTimecode,
   getPlanTrackCounts,
@@ -123,5 +124,31 @@ describe("edit plan review model", () => {
     expect(revised.timeline.titleCards[0]).toMatchObject({ title: "New title", accentColor: "#00ff00" })
     expect(revised.timeline.captionStyle).toMatchObject({ preset: "bold", fontSize: 48 })
     expect(revised.timeline.audioMix?.ducking).toMatchObject({ ratio: 6, releaseMs: 300, targetTrackIds: ["music"] })
+  })
+
+  test("applies production presets across captions, titles, transitions, and ducking", () => {
+    const layered = parseEditPlan({
+      ...sampleEditPlan,
+      version: "2",
+      assets: [
+        ...sampleEditPlan.assets,
+        { id: "music", path: "media/music.wav", kind: "audio" },
+      ],
+      timeline: {
+        ...sampleEditPlan.timeline,
+        overlayTracks: [],
+        audioTracks: [{ id: "music", role: "music", clips: [{ id: "music-1", assetId: "music", timelineStart: 0, sourceStart: 0, sourceEnd: 70 }] }],
+        transitions: [{ id: "fade-1", fromClipId: "fire-analogy", toClipId: "human-potential", type: "fade", duration: 0.5 }],
+        titleCards: [{ id: "intro", timelineStart: 0, duration: 2, title: "Opening" }],
+        captionStyle: { mode: "burn-in", preset: "clean" },
+      },
+    })
+    const revised = applyProductionPreset(layered, "bold-social")
+    expect(revised.version).toBe("2")
+    if (revised.version !== "2") throw new Error("Expected v2 plan")
+    expect(revised.timeline.captionStyle).toMatchObject({ mode: "both", preset: "bold", fontSize: 58 })
+    expect(revised.timeline.transitions[0]).toMatchObject({ type: "slideleft", duration: 0.35 })
+    expect(revised.timeline.titleCards[0]).toMatchObject({ background: "#020617", accentColor: "#F59E0B" })
+    expect(revised.timeline.audioMix?.ducking).toMatchObject({ enabled: true, targetTrackIds: ["music"], ratio: 10 })
   })
 })

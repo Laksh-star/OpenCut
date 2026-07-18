@@ -11,6 +11,8 @@ import { z } from "zod/v4";
 import { getWorkspaceRoot, resolveInputPath } from "./paths.ts";
 import { parseByteRange } from "./range.ts";
 import { createReviewEvent, ReviewSessionRegistry } from "./review-session.ts";
+import { createReviewExportPackage } from "./export-package.ts";
+import { assertPreflightEligible, preflightReviewSession } from "./preflight.ts";
 import { approveAndRenderProject, capabilities, renderPlanValue } from "./service.ts";
 import { editPlanSchema } from "./schema.ts";
 
@@ -58,6 +60,22 @@ const approveSessionBatchSchema = z.object({
   ),
   approvalToken: z.string().uuid(),
   renderLimitSeconds: z.number().min(0.1).max(300).default(300),
+});
+const preflightSessionSchema = z.object({
+  candidateIds: z.array(z.string().min(1)).min(1).max(20).refine(
+    (ids) => new Set(ids).size === ids.length,
+    "candidateIds must be unique",
+  ).optional(),
+  mode: z.enum(["preview", "final", "batch", "export"]).default("final"),
+  renderLimitSeconds: z.number().min(0.1).max(300).default(300),
+});
+const exportPackageRequestSchema = z.object({
+  candidateIds: z.array(z.string().min(1)).min(1).max(20).refine(
+    (ids) => new Set(ids).size === ids.length,
+    "candidateIds must be unique",
+  ).optional(),
+  approvalToken: z.string().uuid(),
+  includeContactSheets: z.boolean().default(true),
 });
 
 let approvalInProgress = false;
@@ -197,6 +215,15 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    const preflightRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/preflight$/);
+    if (request.method === "POST" && preflightRoute) {
+      const input = preflightSessionSchema.parse(await readJsonBody(request));
+      const root = await getWorkspaceRoot();
+      const loaded = await registry.load(preflightRoute[0]!);
+      sendJson(request, response, 200, await preflightReviewSession(root, loaded, input));
+      return;
+    }
+
     const selectRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/select$/);
     if (request.method === "POST" && selectRoute) {
       const input = selectCandidateSchema.parse(await readJsonBody(request));
@@ -300,6 +327,12 @@ const server = createServer(async (request, response) => {
       if (!candidate) throw new Error("Unknown candidate");
       if (candidate.outputExists || candidate.status === "rendered") throw new Error("Rendered candidates are immutable");
       if (candidate.status === "queued" || candidate.status === "rendering") throw new Error("Queued or rendering candidates cannot be previewed");
+      const root = await getWorkspaceRoot();
+      assertPreflightEligible(await preflightReviewSession(root, loaded, {
+        candidateIds: [input.candidateId],
+        mode: "preview",
+        renderLimitSeconds: input.renderLimitSeconds,
+      }));
       const previewOutputPath = posix.join(
         posix.dirname(candidate.planPath), "renders", `preview-r${candidate.revision}.mp4`,
       );
@@ -374,6 +407,12 @@ const server = createServer(async (request, response) => {
       if (!candidate.previewExists || candidate.lastPreviewRevision !== candidate.revision) {
         throw new Error("Render a preview of the current revision before final approval");
       }
+      const root = await getWorkspaceRoot();
+      assertPreflightEligible(await preflightReviewSession(root, loaded, {
+        candidateIds: [input.candidateId],
+        mode: "final",
+        renderLimitSeconds: input.renderLimitSeconds,
+      }));
       approvalInProgress = true;
       await registry.update(approveRoute[0]!, (session) => ({
         ...session,
@@ -442,6 +481,12 @@ const server = createServer(async (request, response) => {
         }
         return candidate;
       });
+      const root = await getWorkspaceRoot();
+      assertPreflightEligible(await preflightReviewSession(root, loaded, {
+        candidateIds: input.candidateIds,
+        mode: "batch",
+        renderLimitSeconds: input.renderLimitSeconds,
+      }));
       const batchId = randomUUID();
       const requestedAt = new Date().toISOString();
       const results: Array<{ candidateId: string; status: "rendered" | "failed"; outputPath?: string; error?: string }> = [];
@@ -564,6 +609,33 @@ const server = createServer(async (request, response) => {
       } finally {
         approvalInProgress = false;
       }
+      return;
+    }
+
+    const exportPackageRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/export-package$/);
+    if (request.method === "POST" && exportPackageRoute) {
+      const input = exportPackageRequestSchema.parse(await readJsonBody(request));
+      const registered = registry.get(exportPackageRoute[0]!);
+      if (registered.approvalToken !== input.approvalToken) {
+        sendJson(request, response, 403, { error: "Invalid review action token" });
+        return;
+      }
+      const root = await getWorkspaceRoot();
+      const loaded = await registry.load(exportPackageRoute[0]!);
+      const exportPackage = await createReviewExportPackage(root, registered.manifestPath, loaded, {
+        candidateIds: input.candidateIds,
+        includeContactSheets: input.includeContactSheets,
+      });
+      const updated = await registry.update(exportPackageRoute[0]!, (session) => ({
+        ...session,
+        updatedAt: new Date().toISOString(),
+        exportPackages: [...session.exportPackages, exportPackage],
+        events: [...session.events, createReviewEvent("export-package-created", {
+          actor: "reviewer",
+          detail: `${exportPackage.id}: ${exportPackage.candidates.length} candidates`,
+        })],
+      }));
+      sendJson(request, response, 200, { exportPackage, session: updated });
       return;
     }
 

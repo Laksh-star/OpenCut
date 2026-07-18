@@ -1,6 +1,6 @@
 # OpenCut Agent Bridge
 
-This package is the first working seam between AI agents and the OpenCut rewrite. It exposes a local MCP server that can inspect media, validate and save declarative edit plans, upgrade v1 plans to the v2 production contract, compile deterministic FFmpeg filter graphs, and render bounded MP4 previews with layered video, speech-keyed music ducking, transitions, title cards, and styled captions.
+This package is the first working seam between AI agents and the OpenCut rewrite. It exposes a local MCP server that can inspect media, validate and save declarative edit plans, upgrade v1 plans to the v2 production contract, compile deterministic FFmpeg filter graphs, run review-session preflight checks, render bounded MP4 previews with layered video, speech-keyed music ducking, transitions, title cards, and styled captions, and create local handoff packages for rendered candidates.
 
 It does **not** automate the browser, publish media, or claim to be OpenCut's future Editor API. The adapter is deliberately isolated so the FFmpeg preview backend can later be replaced by OpenCut's native API and headless renderer.
 
@@ -14,7 +14,9 @@ It does **not** automate the browser, publish media, or claim to be OpenCut's fu
 - `opencut_compile_edit_plan`
 - `opencut_render_preview`
 - `opencut_build_word_timed_captions`
+- `opencut_preflight_review_session`
 - `opencut_approve_and_render_project`
+- `opencut_create_export_package`
 
 Every file operation is restricted to `OPENCUT_AGENT_ROOT`. Inputs must exist,
 missing output directories are created only after their nearest existing parent
@@ -107,7 +109,9 @@ OPENCUT_AGENT_ROOT = "/absolute/path/to/video-workspace"
 4. Validate and save it.
 5. Compile it and review the returned FFmpeg argv.
 6. Render a short preview.
-7. Ask for human approval before a longer render or any publishing workflow.
+7. Run review-session preflight before preview, final, batch, or export actions.
+8. Ask for human approval before a longer render or any publishing workflow.
+9. Package rendered candidates for local delivery without copying the original source video.
 
 Version 1 remains supported unchanged. Version 2 keeps the sequential clips as
 the primary A-roll and adds z-ordered video overlay tracks, independent audio
@@ -128,8 +132,9 @@ native OpenCut project synchronization remain later adapter features.
 
 The web app's agent review workspace consumes this same schema for visual
 inspection and approval. A reviewer can revise clip ranges, ordering, speed,
-volume, and caption inclusion. Every save creates an immutable numbered plan
-snapshot and invalidates any older preview. Final approval atomically saves
+volume, caption inclusion, existing v2 production controls, and reusable
+production presets. Every save creates an immutable numbered plan snapshot and
+invalidates any older preview. Final approval atomically saves
 `approved-edit-plan.json` and `opencut.project.json` beside the project's
 `renders` directory, invokes the higher-quality FFmpeg profile, and records
 source/plan hashes, reviewer notes, and either the rendered or failed state.
@@ -142,7 +147,11 @@ the primary A-roll plus existing v2 production controls: overlay timing/source
 range/canvas placement/fit/opacity/audio, audio track role/timing/source/volume,
 transition type/duration, title-card text/timing/colors, caption style, and
 smart ducking. Every change still flows through the immutable revision endpoint
-and requires a fresh preview before final approval.
+and requires a fresh preview before final approval. The approval panel displays
+backend preflight checks for the next preview or final action, and rendered
+candidates can be bundled into a timestamped export package containing MP4
+copies, approved plans, project records, captions, contact sheets, a manifest,
+and a summary.
 
 ## Candidate review sessions
 
@@ -181,6 +190,8 @@ video-workspace/
   ],
   "reviewerNotes": [],
   "events": [],
+  "renderBatches": [],
+  "exportPackages": [],
   "updatedAt": "2026-07-16T00:00:00.000Z"
 }
 ```
@@ -206,10 +217,13 @@ final** stays locked until that exact revision has a preview. Preview-approved
 candidates can also be added to a batch queue and rendered sequentially through
 one explicit **Approve batch** action. Batch item state is persisted as queued,
 rendering, rendered, or failed so the reviewer can poll progress and retry only
-failed candidates. The final renderer uses a higher-quality profile and records
-an append-only audit trail. Each candidate's revision snapshots, previews,
-approved plan, project record, and final render stay inside that candidate's
-directory.
+failed candidates. Backend preflight checks are enforced for preview, final,
+batch, and export actions, so the UI status is not merely cosmetic. The final
+renderer uses a higher-quality profile and records an append-only audit trail.
+Each candidate's revision snapshots, previews, approved plan, project record,
+and final render stay inside that candidate's directory. Export packages are
+written under `exports/` beside the review manifest and copy only rendered
+outputs plus lightweight handoff metadata, not the original large source video.
 
 The HTTP surface for this workflow is:
 
@@ -220,10 +234,12 @@ The HTTP surface for this workflow is:
 - `POST /v1/review-sessions/:id/notes` — append a revision-specific reviewer note;
 - `GET|HEAD /v1/review-sessions/:id/media/:assetId` — authorized range streaming;
 - `GET /v1/review-sessions/:id/candidates/:candidateId/captions` — authorized captions;
+- `POST /v1/review-sessions/:id/preflight` — read-only checks before preview, final, batch, or export actions;
 - `POST /v1/review-sessions/:id/render-preview` — token-gated fast preview;
 - `GET|HEAD /v1/review-sessions/:id/candidates/:candidateId/preview` — stream the authorized preview;
 - `POST /v1/review-sessions/:id/approve-and-render` — token-gated final render after preview;
-- `POST /v1/review-sessions/:id/approve-batch` — token-gated sequential final render for preview-approved candidates.
+- `POST /v1/review-sessions/:id/approve-batch` — token-gated sequential final render for preview-approved candidates;
+- `POST /v1/review-sessions/:id/export-package` — token-gated local handoff package for rendered candidates.
 
 Session IDs are process-local: restarting the bridge creates a new short URL,
 while the manifest's selected, batch, and rendered state remains on disk.

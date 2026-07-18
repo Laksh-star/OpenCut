@@ -7,13 +7,16 @@ import { alignCaptionWords, captionsToSrt, type CaptionAlignmentOptions } from "
 import { readEditPlan, writeEditPlan, writeJsonFile } from "./files.ts";
 import { inspectMedia, runProcess } from "./media.ts";
 import { getWorkspaceRoot, resolveInputPath, resolveOutputPath } from "./paths.ts";
+import { createReviewExportPackage } from "./export-package.ts";
+import { preflightReviewSession, type PreflightMode } from "./preflight.ts";
+import { loadReviewSession } from "./review-session.ts";
 import { getPlanDuration, parseEditPlan, upgradeEditPlanToV2, type EditPlan } from "./schema.ts";
 
 const MAX_PREVIEW_SECONDS = 300;
 
 export const capabilities = {
   server: "opencut-agent-bridge",
-  version: "0.5.0",
+  version: "0.6.0",
   adapter: "ffmpeg-production-graph",
   editorApiConnected: false,
   operations: [
@@ -24,8 +27,10 @@ export const capabilities = {
     "compile_edit_plan",
     "render_preview",
     "build_word_timed_captions",
+    "preflight_review_session",
     "approve_and_render_project",
     "approve_review_batch",
+    "create_export_package",
   ],
   constraints: {
     schemaVersions: ["1", "2"],
@@ -39,6 +44,8 @@ export const capabilities = {
     titleCards: true,
     batchRendering: true,
     productionLayerEditing: true,
+    preflightChecks: true,
+    exportPackages: true,
     publishing: false,
     workspaceRestricted: true,
   },
@@ -122,6 +129,33 @@ export const inspectWorkspaceMedia = async (requestedPath: string) => {
   const root = await getWorkspaceRoot();
   const path = await resolveInputPath(root, requestedPath);
   return { path, probe: await inspectMedia(path) };
+};
+
+export const preflightReviewManifest = async (
+  requestedManifestPath: string,
+  options: {
+    candidateIds?: string[];
+    mode?: PreflightMode;
+    renderLimitSeconds?: number;
+  } = {},
+) => {
+  const root = await getWorkspaceRoot();
+  const manifestPath = await resolveInputPath(root, requestedManifestPath);
+  const session = await loadReviewSession(manifestPath);
+  return preflightReviewSession(root, session, options);
+};
+
+export const createReviewExportPackageFromManifest = async (
+  requestedManifestPath: string,
+  options: {
+    candidateIds?: string[];
+    includeContactSheets?: boolean;
+  } = {},
+) => {
+  const root = await getWorkspaceRoot();
+  const manifestPath = await resolveInputPath(root, requestedManifestPath);
+  const session = await loadReviewSession(manifestPath);
+  return createReviewExportPackage(root, manifestPath, session, options);
 };
 
 export const buildWordTimedCaptions = async (

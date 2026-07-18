@@ -55,6 +55,32 @@ export type RenderBatch = {
   completedAt?: string
   items: RenderBatchItem[]
 }
+export type ExportPackageCandidate = {
+  candidateId: string
+  title: string
+  revision: number
+  durationSeconds: number
+  outputPath: string
+  packagedOutputPath: string
+  outputBytes: number
+  approvedEditPlanPath?: string
+  projectRecordPath?: string
+  captionsPath?: string
+  contactSheetPath?: string
+}
+export type ReviewExportPackage = {
+  version: "1"
+  id: string
+  reviewSessionId: string
+  title: string
+  status: "created" | "partial"
+  createdAt: string
+  packagePath: string
+  manifestPath: string
+  summaryPath: string
+  candidates: ExportPackageCandidate[]
+  warnings: string[]
+}
 export type ReviewSession = {
   version: "1"
   id: string
@@ -65,9 +91,36 @@ export type ReviewSession = {
   reviewerNotes: ReviewerNote[]
   events: ReviewEvent[]
   renderBatches: RenderBatch[]
+  exportPackages: ReviewExportPackage[]
   createdBy?: { agent?: string; model?: string }
   updatedAt: string
   approvalToken: string
+}
+
+export type PreflightSeverity = "pass" | "warn" | "block"
+export type PreflightMode = "preview" | "final" | "batch" | "export"
+export type PreflightCheck = {
+  id: string
+  severity: PreflightSeverity
+  label: string
+  detail: string
+  candidateId?: string
+  revision?: number
+}
+export type CandidatePreflight = {
+  candidateId: string
+  revision: number
+  mode: PreflightMode
+  eligible: boolean
+  checks: PreflightCheck[]
+  summary: Record<PreflightSeverity, number>
+}
+export type ReviewSessionPreflight = {
+  checkedAt: string
+  mode: PreflightMode
+  renderLimitSeconds: number
+  candidates: CandidatePreflight[]
+  summary: Record<PreflightSeverity, number>
 }
 
 export const candidateForSelection = (session: ReviewSession) =>

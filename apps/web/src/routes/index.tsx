@@ -33,11 +33,13 @@ import { Button } from "#/components/ui/button.tsx"
 import { parseCaptionFile, type CaptionCue } from "#/lib/captions.ts"
 import {
   buildTimelineSegments,
+  applyProductionPreset,
   formatTimecode,
   getPlanTrackCounts,
   getTimelineDuration,
   movePlanClip,
   parseEditPlan,
+  productionPresetOptions,
   sampleEditPlan,
   setPlanCaptionsEnabled,
   updateAudioClip,
@@ -49,12 +51,15 @@ import {
   updateTitleCard,
   updateTransition,
   type EditPlan,
+  type ProductionPresetId,
   type TimelineSegment,
 } from "#/lib/edit-plan.ts"
 import {
   candidateHasCurrentPreview,
   candidateForSelection,
   mediaAssetForPlan,
+  type ReviewSessionPreflight,
+  type ReviewExportPackage,
   type RenderBatch,
   type ReviewCandidate,
   type ReviewSession,
@@ -79,6 +84,11 @@ type BatchApprovalResult = {
   session: ReviewSession
 }
 
+type ExportPackageResult = {
+  exportPackage: ReviewExportPackage
+  session: ReviewSession
+}
+
 const bridgeUrl = (
   import.meta.env.VITE_OPENCUT_BRIDGE_URL ?? "http://127.0.0.1:3210"
 ).replace(/\/$/, "")
@@ -99,6 +109,12 @@ function AgentReviewWorkspace() {
   const [batchCandidateIds, setBatchCandidateIds] = useState<string[]>([])
   const [batchRendering, setBatchRendering] = useState(false)
   const [batchError, setBatchError] = useState<string | null>(null)
+  const [preflight, setPreflight] = useState<ReviewSessionPreflight | null>(null)
+  const [preflightLoading, setPreflightLoading] = useState(false)
+  const [preflightError, setPreflightError] = useState<string | null>(null)
+  const [exportPackaging, setExportPackaging] = useState(false)
+  const [exportPackage, setExportPackage] = useState<ReviewExportPackage | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
   const [bridgeOnline, setBridgeOnline] = useState<boolean | null>(null)
   const [planError, setPlanError] = useState<string | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
@@ -162,6 +178,14 @@ function AgentReviewWorkspace() {
     ? `${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/candidates/${encodeURIComponent(activeCandidate.id)}/preview`
     : null
   const latestBatch = reviewSession?.renderBatches.at(-1)
+  const latestExportPackage = exportPackage ?? reviewSession?.exportPackages.at(-1) ?? null
+  const activePreflight = activeCandidate
+    ? preflight?.candidates.find((candidate) => candidate.candidateId === activeCandidate.id)
+    : undefined
+  const activePreflightBlocks = activePreflight?.summary.block ?? 0
+  const renderedCandidateIds = reviewSession?.candidates
+    .filter((candidate) => candidate.outputExists || candidate.status === "rendered")
+    .map((candidate) => candidate.id) ?? []
   const latestBatchActive = latestBatch?.status === "queued" || latestBatch?.status === "rendering"
   const interactionLocked = reviewState === "saving" || reviewState === "previewing" || reviewState === "rendering" || batchRendering || latestBatchActive
   const canEditPlan = Boolean(
@@ -181,6 +205,41 @@ function AgentReviewWorkspace() {
       return candidate ? canBatchRenderCandidate(candidate) : false
     }))
   }, [reviewSession])
+
+  useEffect(() => {
+    if (!reviewSession || !activeCandidate || !sessionId || planIsDirty) {
+      setPreflight(null)
+      setPreflightError(null)
+      setPreflightLoading(false)
+      return
+    }
+    const controller = new AbortController()
+    const mode = hasCurrentPreview ? "final" : "preview"
+    setPreflightLoading(true)
+    setPreflightError(null)
+    void fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/preflight`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        candidateIds: [activeCandidate.id],
+        mode,
+        renderLimitSeconds: mode === "preview" ? 60 : 300,
+      }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = (await response.json()) as ReviewSessionPreflight & { error?: string }
+        if (!response.ok) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+        setPreflight(payload)
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setPreflightError(error instanceof Error ? error.message : "Could not run preflight checks")
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setPreflightLoading(false)
+      })
+    return () => controller.abort()
+  }, [activeCandidate?.id, activeCandidate?.revision, hasCurrentPreview, planIsDirty, reviewSession, sessionId])
 
   useEffect(() => {
     return () => {
@@ -534,6 +593,31 @@ function AgentReviewWorkspace() {
     }
   }
 
+  async function createExportPackage() {
+    if (!reviewSession || renderedCandidateIds.length === 0 || exportPackaging || !sessionId) return
+    setExportPackaging(true)
+    setExportError(null)
+    try {
+      const response = await fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/export-package`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          candidateIds: renderedCandidateIds,
+          approvalToken: reviewSession.approvalToken,
+          includeContactSheets: true,
+        }),
+      })
+      const payload = (await response.json()) as ExportPackageResult & { error?: string }
+      if (!response.ok || !payload.session || !payload.exportPackage) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+      setReviewSession(payload.session)
+      setExportPackage(payload.exportPackage)
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "Could not create the export package")
+    } finally {
+      setExportPackaging(false)
+    }
+  }
+
   function selectSegment(segment: TimelineSegment) {
     setSelectedClipId(segment.clip.id)
     setCurrentSourceTime(segment.clip.sourceStart)
@@ -744,7 +828,8 @@ function AgentReviewWorkspace() {
                 !reviewSession.selectedCandidateId ||
                 planIsDirty ||
                 interactionLocked ||
-                reviewState === "rendered"
+                reviewState === "rendered" ||
+                (!hasCurrentPreview && activePreflightBlocks > 0)
               }
               onClick={() => void renderPreview()}
               title={planIsDirty ? "Save the revision before rendering its preview" : "Render a fast local preview"}
@@ -768,6 +853,7 @@ function AgentReviewWorkspace() {
               latestBatchActive ||
               reviewState === "rendered" ||
               Boolean(reviewSession && (!reviewSession.selectedCandidateId || planIsDirty || !hasCurrentPreview))
+              || Boolean(reviewSession && hasCurrentPreview && activePreflightBlocks > 0)
             }
             onClick={() => void approveAndRender()}
           >
@@ -895,6 +981,39 @@ function AgentReviewWorkspace() {
               >
                 {batchRendering || latestBatchActive ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
                 {batchRendering || latestBatchActive ? "Batch rendering..." : `Approve batch (${batchCandidateIds.length})`}
+              </Button>
+            </div>
+          </div>
+          <div className="mt-3 grid gap-2 rounded-lg border border-emerald-300/15 bg-emerald-400/[0.06] p-3 md:grid-cols-[minmax(0,1fr)_auto]">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-200">Export package</p>
+              <p className="mt-1 text-[10px] text-zinc-500">
+                {latestExportPackage
+                  ? `Latest package ${latestExportPackage.status}: ${latestExportPackage.candidates.length} rendered candidate${latestExportPackage.candidates.length === 1 ? "" : "s"} bundled.`
+                  : renderedCandidateIds.length > 0
+                    ? `${renderedCandidateIds.length} rendered candidate${renderedCandidateIds.length === 1 ? "" : "s"} ready for a local handoff bundle.`
+                    : "Render at least one candidate before creating a handoff bundle."}
+              </p>
+              {latestExportPackage ? (
+                <p className="mt-2 font-mono text-[9px] text-emerald-200/70">
+                  {latestExportPackage.packagePath}
+                </p>
+              ) : null}
+              {latestExportPackage?.warnings.length ? (
+                <p className="mt-1 text-[10px] text-amber-200">
+                  {latestExportPackage.warnings.length} packaging warning{latestExportPackage.warnings.length === 1 ? "" : "s"}; see manifest for details.
+                </p>
+              ) : null}
+              {exportError ? <p className="mt-2 text-[10px] text-red-300">{exportError}</p> : null}
+            </div>
+            <div className="flex items-end">
+              <Button
+                className="bg-emerald-300 text-emerald-950 hover:bg-emerald-200"
+                disabled={renderedCandidateIds.length === 0 || exportPackaging || latestBatchActive || batchRendering}
+                onClick={() => void createExportPackage()}
+              >
+                {exportPackaging ? <LoaderCircle className="animate-spin" /> : <Download />}
+                {exportPackaging ? "Packaging..." : `Package ${renderedCandidateIds.length}`}
               </Button>
             </div>
           </div>
@@ -1194,6 +1313,12 @@ function AgentReviewWorkspace() {
                 onSelectTitleCard={setSelectedTitleCardId}
                 onApply={reviseProductionPlan}
               />
+              <PreflightPanel
+                preflight={activePreflight}
+                loading={preflightLoading}
+                error={preflightError}
+                dirty={planIsDirty}
+              />
               <InspectorSection title="Review state">
                 <div className={`rounded-lg border p-3 ${
                   reviewState === "rendered"
@@ -1436,6 +1561,86 @@ function InspectorValue({ icon, label, value }: { icon?: React.ReactNode; label:
   )
 }
 
+function PreflightPanel({
+  preflight,
+  loading,
+  error,
+  dirty,
+}: {
+  preflight: ReviewSessionPreflight["candidates"][number] | undefined
+  loading: boolean
+  error: string | null
+  dirty: boolean
+}) {
+  const checks = preflight?.checks ?? []
+  const visibleChecks = checks.filter((check) => check.severity !== "pass").slice(0, 4)
+  const blocked = (preflight?.summary.block ?? 0) > 0
+  const warned = (preflight?.summary.warn ?? 0) > 0
+  return (
+    <InspectorSection title="Preflight">
+      <div className={`rounded-lg border p-3 ${
+        dirty
+          ? "border-amber-300/20 bg-amber-300/[0.06]"
+          : blocked
+            ? "border-red-400/25 bg-red-400/8"
+            : warned
+              ? "border-amber-300/20 bg-amber-300/[0.06]"
+              : "border-emerald-400/20 bg-emerald-400/8"
+      }`}>
+        <p className={`flex items-center gap-2 text-xs font-medium ${
+          dirty
+            ? "text-amber-200"
+            : blocked
+              ? "text-red-300"
+              : warned
+                ? "text-amber-200"
+                : "text-emerald-300"
+        }`}>
+          {loading ? (
+            <LoaderCircle className="size-3.5 animate-spin" />
+          ) : dirty || blocked ? (
+            <CircleAlert className="size-3.5" />
+          ) : (
+            <Check className="size-3.5" />
+          )}
+          {dirty
+            ? "Save revision first"
+            : loading
+              ? "Checking"
+              : blocked
+                ? `${preflight?.summary.block ?? 0} blocker${preflight?.summary.block === 1 ? "" : "s"}`
+                : warned
+                  ? `${preflight?.summary.warn ?? 0} warning${preflight?.summary.warn === 1 ? "" : "s"}`
+                  : "Ready"}
+        </p>
+        <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
+          {dirty
+            ? "Preflight runs against saved revisions. Save this edit before preview or final render."
+            : error
+              ? error
+              : preflight
+                ? `${preflight.mode} preflight checked ${preflight.summary.pass} passing rule${preflight.summary.pass === 1 ? "" : "s"}.`
+                : "No saved review candidate is active."}
+        </p>
+        {visibleChecks.length > 0 ? (
+          <div className="mt-2 space-y-1.5">
+            {visibleChecks.map((check) => (
+              <div key={check.id} className="rounded border border-white/8 bg-black/25 p-2">
+                <p className={`text-[9px] font-semibold uppercase tracking-[0.14em] ${
+                  check.severity === "block" ? "text-red-300" : "text-amber-200"
+                }`}>
+                  {check.label}
+                </p>
+                <p className="mt-1 text-[9px] leading-relaxed text-zinc-500">{check.detail}</p>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </InspectorSection>
+  )
+}
+
 function ProductionInspector({
   plan,
   disabled,
@@ -1497,6 +1702,25 @@ function ProductionInspector({
 
   return (
     <>
+      <InspectorSection title="Production presets">
+        <div className="space-y-2">
+          {productionPresetOptions.map((preset) => (
+            <button
+              key={preset.id}
+              className="w-full rounded-md border border-white/10 bg-black/30 p-2 text-left transition hover:border-amber-300/35 hover:bg-amber-300/10 disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={disabled}
+              onClick={() => onApply((current) => applyProductionPreset(current, preset.id as ProductionPresetId))}
+            >
+              <span className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-200">
+                <WandSparkles className="size-3 text-amber-200" />
+                {preset.label}
+              </span>
+              <span className="mt-1 block text-[9px] leading-relaxed text-zinc-600">{preset.description}</span>
+            </button>
+          ))}
+        </div>
+      </InspectorSection>
+
       {overlayEntry ? (
         <InspectorSection title="Overlay">
           <SelectEditor

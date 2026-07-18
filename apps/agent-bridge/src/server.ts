@@ -6,7 +6,9 @@ import {
   buildWordTimedCaptions,
   capabilities,
   compilePlanFile,
+  createReviewExportPackageFromManifest,
   inspectWorkspaceMedia,
+  preflightReviewManifest,
   renderPlanPreview,
   savePlan,
   upgradePlan,
@@ -21,7 +23,7 @@ const jsonResult = (value: unknown) => ({
 
 export const buildServer = () => {
   const server = new McpServer(
-    { name: "opencut-agent-bridge", version: "0.5.0" },
+    { name: "opencut-agent-bridge", version: "0.6.0" },
     {
       instructions:
         "Inspect media before creating an edit plan. Validate, save, and compile the plan before rendering. Rendering only creates a local preview; this server never publishes media.",
@@ -139,6 +141,27 @@ export const buildServer = () => {
   );
 
   server.registerTool(
+    "opencut_preflight_review_session",
+    {
+      description:
+        "Run read-only preflight checks against a saved review-session manifest before preview, final, batch, or export actions.",
+      inputSchema: z.object({
+        manifestPath: z.string().min(1),
+        candidateIds: z.array(z.string().min(1)).min(1).max(20).optional(),
+        mode: z.enum(["preview", "final", "batch", "export"]).default("final"),
+        renderLimitSeconds: z.number().min(0.1).max(300).optional(),
+      }),
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async ({ manifestPath, candidateIds, mode, renderLimitSeconds }) =>
+      jsonResult(await preflightReviewManifest(manifestPath, {
+        candidateIds,
+        mode,
+        renderLimitSeconds,
+      }))
+  );
+
+  server.registerTool(
     "opencut_approve_and_render_project",
     {
       description:
@@ -156,6 +179,25 @@ export const buildServer = () => {
           approvalSource: "mcp",
         })
       )
+  );
+
+  server.registerTool(
+    "opencut_create_export_package",
+    {
+      description:
+        "Create a local handoff package for rendered review candidates, including MP4 copies, approved plans, project records, captions, contact sheets, and a manifest. This never uploads or publishes media.",
+      inputSchema: z.object({
+        manifestPath: z.string().min(1),
+        candidateIds: z.array(z.string().min(1)).min(1).max(20).optional(),
+        includeContactSheets: z.boolean().default(true),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async ({ manifestPath, candidateIds, includeContactSheets }) =>
+      jsonResult(await createReviewExportPackageFromManifest(manifestPath, {
+        candidateIds,
+        includeContactSheets,
+      }))
   );
 
   return server;

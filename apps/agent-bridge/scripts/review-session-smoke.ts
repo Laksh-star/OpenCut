@@ -111,6 +111,13 @@ try {
   if (previewMedia.status !== 206 || (await previewMedia.arrayBuffer()).byteLength !== 100) {
     throw new Error("Rendered preview range response failed");
   }
+  const preflightResponse = await fetch(`${base}/v1/review-sessions/${registration.sessionId}/preflight`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ candidateIds: ["one", "two"], mode: "batch", renderLimitSeconds: 2 }),
+  });
+  if (!preflightResponse.ok) throw new Error(await preflightResponse.text());
+  const preflight = await preflightResponse.json() as { summary: { block: number } };
+  if (preflight.summary.block !== 0) throw new Error("Batch preflight unexpectedly blocked");
   const approvedResponse = await fetch(`${base}/v1/review-sessions/${registration.sessionId}/approve-batch`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ candidateIds: ["one", "two"], approvalToken: registration.approvalToken, renderLimitSeconds: 2 }),
@@ -129,15 +136,30 @@ try {
   if (approved.session.candidates.some((candidate) => candidate.status !== "rendered") || recordOne.status !== "rendered" || recordTwo.status !== "rendered") throw new Error("Session did not persist rendered state");
   if (approved.session.renderBatches.at(-1)?.status !== "completed") throw new Error("Batch status was not persisted");
   if (!recordOne.provenance?.planSha256 || !recordTwo.provenance?.planSha256 || recordOne.render?.mode !== "final" || recordTwo.render?.mode !== "final") throw new Error("Final render provenance was not persisted");
+  const exportResponse = await fetch(`${base}/v1/review-sessions/${registration.sessionId}/export-package`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approvalToken: registration.approvalToken, includeContactSheets: true }),
+  });
+  if (!exportResponse.ok) throw new Error(await exportResponse.text());
+  const exported = await exportResponse.json() as {
+    exportPackage: { manifestPath: string; summaryPath: string; candidates: Array<{ packagedOutputPath: string; contactSheetPath?: string }> };
+    session: { exportPackages: Array<{ id: string }> };
+  };
+  if (exported.exportPackage.candidates.length !== 2 || exported.session.exportPackages.length !== 1) throw new Error("Export package was not persisted");
+  if (!(await Bun.file(join(root, exported.exportPackage.manifestPath)).exists()) || !(await Bun.file(join(root, exported.exportPackage.summaryPath)).exists())) {
+    throw new Error("Export package manifest or summary was not written");
+  }
   console.log(JSON.stringify({
     root,
     mediaRangeBytes: 100,
     captions: "authorized",
+    preflight: "passed",
     preview: "rendered-and-streamed",
     outputBytes: [outputOneBytes, outputTwoBytes],
     status: approved.status,
+    exportPackage: exported.exportPackage.manifestPath,
     provenance: "sha256",
-    events: approved.session.events.map((event) => event.type),
+    events: exported.session.exportPackages.length,
   }, null, 2));
 } finally {
   child.kill("SIGTERM");

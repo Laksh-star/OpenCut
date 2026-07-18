@@ -12,6 +12,7 @@ export type Transition = EditPlanV2["timeline"]["transitions"][number]
 export type TitleCard = EditPlanV2["timeline"]["titleCards"][number]
 export type CaptionStyle = NonNullable<EditPlanV2["timeline"]["captionStyle"]>
 export type DuckingSettings = NonNullable<NonNullable<EditPlanV2["timeline"]["audioMix"]>["ducking"]>
+export type ProductionPresetId = "clean-interview" | "bold-social" | "minimal-archive"
 
 export type TimelineSegment = {
   clip: EditPlan["timeline"]["clips"][number]
@@ -269,6 +270,83 @@ export function updateDucking(
         ...(plan.timeline.audioMix ?? {}),
         ducking: nextDucking,
       },
+    },
+  })
+}
+
+export const productionPresetOptions: Array<{ id: ProductionPresetId; label: string; description: string }> = [
+  { id: "clean-interview", label: "Clean interview", description: "Readable captions, gentle fades, restrained title colors, and transparent music ducking." },
+  { id: "bold-social", label: "Bold social", description: "Large high-contrast captions, quicker motion, stronger title accents, and deeper music ducking." },
+  { id: "minimal-archive", label: "Minimal archive", description: "Low-touch captions, subtle titles, soft fades, and conservative audio treatment." },
+]
+
+export function applyProductionPreset(plan: EditPlan, presetId: ProductionPresetId): EditPlan {
+  if (plan.version !== "2") return plan
+  const musicTrackIds = plan.timeline.audioTracks.filter((track) => track.role === "music").map((track) => track.id)
+  const targetTrackIds = musicTrackIds.length > 0
+    ? musicTrackIds
+    : plan.timeline.audioTracks.slice(0, 1).map((track) => track.id)
+  const preset = {
+    "clean-interview": {
+      captionStyle: {
+        mode: "both" as const,
+        preset: "clean" as const,
+        fontSize: 42,
+        textColor: "#FFFFFF",
+        outlineColor: "#000000",
+        backgroundColor: "#000000",
+        backgroundOpacity: 0.68,
+        marginV: 56,
+        alignment: "bottom" as const,
+      },
+      transition: { type: "fade" as const, duration: 0.45 },
+      title: { background: "#111827", textColor: "#FFFFFF", accentColor: "#FBBF24" },
+      ducking: { enabled: targetTrackIds.length > 0, targetTrackIds, threshold: 0.04, ratio: 8, attackMs: 20, releaseMs: 250 },
+    },
+    "bold-social": {
+      captionStyle: {
+        mode: "both" as const,
+        preset: "bold" as const,
+        fontSize: 58,
+        textColor: "#FFFFFF",
+        outlineColor: "#020617",
+        backgroundColor: "#F59E0B",
+        backgroundOpacity: 0.84,
+        marginV: 44,
+        alignment: "bottom" as const,
+      },
+      transition: { type: "slideleft" as const, duration: 0.35 },
+      title: { background: "#020617", textColor: "#FFFFFF", accentColor: "#F59E0B" },
+      ducking: { enabled: targetTrackIds.length > 0, targetTrackIds, threshold: 0.035, ratio: 10, attackMs: 12, releaseMs: 320 },
+    },
+    "minimal-archive": {
+      captionStyle: {
+        mode: "both" as const,
+        preset: "minimal" as const,
+        fontSize: 36,
+        textColor: "#F4F4F5",
+        outlineColor: "#18181B",
+        backgroundColor: "#000000",
+        backgroundOpacity: 0.42,
+        marginV: 72,
+        alignment: "bottom" as const,
+      },
+      transition: { type: "fade" as const, duration: 0.3 },
+      title: { background: "#18181B", textColor: "#F4F4F5", accentColor: "#A1A1AA" },
+      ducking: { enabled: targetTrackIds.length > 0, targetTrackIds, threshold: 0.05, ratio: 6, attackMs: 30, releaseMs: 420 },
+    },
+  }[presetId]
+
+  return parseEditPlan({
+    ...plan,
+    timeline: {
+      ...plan.timeline,
+      captionStyle: plan.timeline.captionsAssetId ? preset.captionStyle : plan.timeline.captionStyle,
+      transitions: plan.timeline.transitions.map((transition) => ({ ...transition, ...preset.transition })),
+      titleCards: plan.timeline.titleCards.map((title) => ({ ...title, ...preset.title })),
+      audioMix: plan.timeline.audioTracks.length > 0
+        ? { ...(plan.timeline.audioMix ?? {}), ducking: preset.ducking }
+        : plan.timeline.audioMix,
     },
   })
 }

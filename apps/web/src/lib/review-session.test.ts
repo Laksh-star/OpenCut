@@ -5,7 +5,7 @@ import { candidateForSelection, candidateHasCurrentPreview, mediaAssetForPlan, t
 const session = {
   version: "1", id: "demo", title: "Demo", updatedAt: new Date().toISOString(), approvalToken: "token",
   selectedCandidateId: "one",
-  reviewerNotes: [], events: [], renderBatches: [],
+  reviewerNotes: [], events: [], renderBatches: [], exportPackages: [],
   sourceAssets: [{ id: "interview", label: "Interview", path: sampleEditPlan.assets[0]!.path }],
   candidates: [{
     id: "one", title: "One", summary: "", planPath: "one/edit-plan.json", status: "selected",

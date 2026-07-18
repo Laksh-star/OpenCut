@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { createReviewExportPackage } from "../src/export-package.ts";
+import { preflightReviewSession } from "../src/preflight.ts";
 import { loadReviewSession, ReviewSessionRegistry } from "../src/review-session.ts";
 
 const fixture = async () => {
@@ -35,6 +37,7 @@ describe("review sessions", () => {
     const loaded = await loadReviewSession(join(root, "review-session.json"));
     expect(loaded.candidates[0]?.outputExists).toBe(false);
     expect(loaded.renderBatches).toEqual([]);
+    expect(loaded.exportPackages).toEqual([]);
     const registry = new ReviewSessionRegistry();
     const registered = await registry.register("review-session.json");
     const selected = await registry.update(registered.sessionId, (session) => ({
@@ -102,5 +105,38 @@ describe("review sessions", () => {
     const withNote = await registry.load(registered.sessionId);
     expect(withNote.events.map((event) => event.type)).toContain("plan-revised");
     expect(withNote.reviewerNotes[0]?.text).toBe("The new ending is cleaner.");
+  });
+
+  test("blocks final preflight until the current revision has a preview", async () => {
+    const root = await fixture();
+    process.env.OPENCUT_AGENT_ROOT = root;
+    const registry = new ReviewSessionRegistry();
+    const registered = await registry.register("review-session.json");
+    const selected = await registry.update(registered.sessionId, (session) => ({
+      ...session,
+      selectedCandidateId: "candidate",
+      candidates: session.candidates.map((candidate) => ({ ...candidate, status: "selected" })),
+    }));
+    const preflight = await preflightReviewSession(root, selected, {
+      candidateIds: ["candidate"],
+      mode: "final",
+    });
+    expect(preflight.summary.block).toBeGreaterThan(0);
+    expect(preflight.candidates[0]?.checks.some((check) => check.id === "preview:fresh" && check.severity === "block")).toBe(true);
+  });
+
+  test("creates an export package for rendered candidates", async () => {
+    const root = await fixture();
+    process.env.OPENCUT_AGENT_ROOT = root;
+    await writeFile(join(root, "candidate", "renders", "output.mp4"), "rendered");
+    const workspaceRoot = await realpath(root);
+    const loaded = await loadReviewSession(join(root, "review-session.json"));
+    const exportPackage = await createReviewExportPackage(workspaceRoot, join(root, "review-session.json"), loaded, {
+      candidateIds: ["candidate"],
+      includeContactSheets: false,
+    });
+    expect(exportPackage.candidates[0]?.packagedOutputPath).toMatch(/exports\/.+\/media\/candidate-output\.mp4/);
+    expect(await Bun.file(join(root, exportPackage.manifestPath)).exists()).toBe(true);
+    expect(await Bun.file(join(root, exportPackage.summaryPath)).exists()).toBe(true);
   });
 });
