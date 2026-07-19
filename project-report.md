@@ -1,10 +1,10 @@
 # OpenCut AI-Agent Extension Project Report
 
-**Status date:** 18 July 2026
+**Status date:** 19 July 2026
 **Fork:** [Laksh-star/OpenCut](https://github.com/Laksh-star/OpenCut)
 **Upstream:** [OpenCut-app/OpenCut](https://github.com/OpenCut-app/OpenCut)
 **Working branch:** `codex/agent-bridge-mvp`
-**Branch status:** pushed to `origin/codex/agent-bridge-mvp`
+**Branch status:** rebased onto latest `upstream/main` and pushed to `origin/codex/agent-bridge-mvp`
 
 ## 1. Executive summary
 
@@ -50,19 +50,36 @@ The fork is configured with two remotes:
 - `origin` points to `Laksh-star/OpenCut`;
 - `upstream` points to `OpenCut-app/OpenCut`.
 
-Four completed extension commits were already present on the pushed feature branch before the current stabilization milestone:
+On 19 July 2026, before continuing feature development, the feature branch was
+rebased onto the latest `upstream/main`. Upstream had one new commit since the
+previous fork base:
+
+- `5e0696bc` — `fix(tooling): set bun as javascript package manager so moon auto-installs deps`
+
+The rebase completed without conflicts. It aligned `.moon/toolchains.yml` with
+upstream, preserved the OpenCut agent bridge changes, and the branch was pushed
+back to `Laksh-star/OpenCut` with `--force-with-lease`. After the push, local
+`codex/agent-bridge-mvp` and `origin/codex/agent-bridge-mvp` were in sync. The
+only local noise left uncommitted was an unrelated `.DS_Store`.
+
+The rebased implementation stack is:
 
 | Commit | Change | Result |
 | --- | --- | --- |
-| `e07828d9` | Add OpenCut MCP agent bridge | Introduced the schema, MCP tools, safe filesystem layer, FFmpeg compiler/renderer, tests, examples, and documentation. |
-| `a3aac399` | Add agent edit plan review workspace | Replaced the placeholder web page with a visual plan-review experience backed by the shared bridge schema. |
-| `7a16bcf5` | Connect plan approval to local rendering | Added the local HTTP approval bridge, project persistence, approval UI states, and end-to-end approval/render smoke coverage. |
-| `43d34448` | Add interactive review playback controls | Added URL plan loading, source-accurate playback, seek/scrub controls, caption parsing, and caption overlays. |
+| `1862367c` | Add OpenCut MCP agent bridge | Introduced the schema, MCP tools, safe filesystem layer, FFmpeg compiler/renderer, tests, examples, and documentation. |
+| `4689a2ed` | Add agent edit plan review workspace | Replaced the placeholder web page with a visual plan-review experience backed by the shared bridge schema. |
+| `8d781ed0` | Connect plan approval to local rendering | Added the local HTTP approval bridge, project persistence, approval UI states, and end-to-end approval/render smoke coverage. |
+| `1344a508` | Add interactive review playback controls | Added URL plan loading, source-accurate playback, seek/scrub controls, caption parsing, and caption overlays. |
+| `b8198fce` | Add candidate review sessions | Added opaque multi-candidate session manifests and a safer review URL handoff. |
+| `e637970f` | Add revisioned review and preview approval gates | Added immutable revisions, reviewer notes, event history, preview gating, and output provenance. |
+| `35d65275` | Add multitrack edit plans and setup packager | Added v2 overlays/audio schema, upgrade helpers, and workspace-scoped setup artifacts. |
+| `c5e7fac9` | Add production finishing features | Added transitions, title cards, styled captions, smart ducking, and production render coverage. |
+| `d2ca729e` | Add batch review and production controls | Added batch render approval plus editable v2 production controls in the review UI. |
+| `ad2f3319` | Add preflight and export handoff | Added backend preflight enforcement, production presets, export packages, MCP exposure, and expanded tests/smokes. |
 
-The current July 18 milestone adds preflight enforcement, production presets,
-local export packaging, persistent export-package metadata, MCP exposure for the
-new primitives, and expanded test/smoke coverage. Exact branch totals should be
-read from Git rather than treated as a fixed figure in this cumulative report.
+This report may be followed by documentation-only commits. Exact branch totals
+should be read from Git rather than treated as a fixed figure in this cumulative
+report.
 
 ## 4. Architecture delivered
 
@@ -371,7 +388,7 @@ Keeping the source video and generated media outside the fork avoids committing 
 
 ## 7. Published workflow explainer
 
-A standalone behind-the-scenes visualization was created and then updated to reflect the completed implementation rather than the earlier planned state. It now explains the nine-stage flow from request and consent through transcription, agent decisions, OpenCut review, approval, persistence, rendering, and verification.
+A standalone behind-the-scenes visualization was created and then updated to reflect the completed implementation rather than the earlier planned state. It now explains the 13-stage flow from request and consent through transcription, agent decisions, OpenCut review, production presets, preflight, approval, persistence, rendering, export handoff, and verification.
 
 Production URL: [OpenCut behind the scenes](https://opencut-behind-the-scenes.lakshyindy.chatgpt.site)
 
@@ -379,10 +396,15 @@ The Sites project is currently private and owner-only. The published page preser
 
 ## 8. Verification record
 
-The following checks were rerun on 18 July 2026 using the repo-local Bun 1.3.11 executable and local web tool shims:
+The automated verification suite was rerun after the 19 July 2026 upstream
+rebase using the repo-local Bun 1.3.11 executable and local web tool shims. The
+browser-workflow and real-output rows below are retained from the earlier
+implementation verification because the rebase touched only tooling and
+documentation-adjacent surfaces, not the generated real-media artifacts.
 
 | Check | Result |
 | --- | --- |
+| Upstream rebase audit | **Pass:** branch rebased cleanly onto `upstream/main` at `5e0696bc`; local and `origin/codex/agent-bridge-mvp` were in sync after push; no feature-file conflicts were predicted or observed. |
 | Agent bridge unit tests | **Pass:** 30 tests across v1/v2 schema migration, overlays, ducked audio, transitions, production graphics, setup packaging, FFmpeg profiles, timed-caption grouping, byte ranges, path security, project paths, immutable revisions, review events, candidate isolation, batch metadata persistence, preflight blockers, and export package creation. |
 | Agent bridge TypeScript check | **Pass:** `tsc --noEmit`. |
 | Agent bridge build | **Pass:** Bun build generated the Node-target bundle. |
