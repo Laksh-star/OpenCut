@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
-import { alignCaptionWords, captionsToSrt } from "../src/captions.ts";
+import { alignCaptionWords, captionsToSrt, normalizeCaptionCues } from "../src/captions.ts";
 import { parseEditPlan } from "../src/schema.ts";
-import { generateCandidateCaptions, transcriptionToCaptions } from "../src/subtitle-providers.ts";
+import { checkSubtitleProviderReadiness, generateCandidateCaptions, transcriptionToCaptions } from "../src/subtitle-providers.ts";
 
 describe("word-timed caption alignment", () => {
   test("creates readable cues at sentence and speaker boundaries", () => {
@@ -23,6 +23,20 @@ describe("word-timed caption alignment", () => {
   test("emits standard SRT timestamps", () => {
     expect(captionsToSrt([{ start: 1.2, end: 3.45, text: "A clean caption" }])).toContain(
       "00:00:01,200 --> 00:00:03,450",
+    );
+  });
+
+  test("normalizes human-edited caption cues before saving", () => {
+    expect(normalizeCaptionCues([
+      { start: 2.2222, end: 3.3333, text: " second   cue " },
+      { start: 0, end: 1.1111, text: "first cue" },
+    ])).toEqual([
+      { start: 0, end: 1.111, text: "first cue" },
+      { start: 2.222, end: 3.333, text: "second cue" },
+    ]);
+
+    expect(() => normalizeCaptionCues([{ start: 1, end: 1, text: "bad" }])).toThrow(
+      "Caption cue end must be after start",
     );
   });
 
@@ -70,5 +84,30 @@ describe("word-timed caption alignment", () => {
       planPath: "candidate/edit-plan.json",
       plan,
     })).rejects.toThrow("requires explicit approval");
+  });
+
+  test("reports missing API keys before external caption generation", async () => {
+    const original = process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    const plan = parseEditPlan({
+      version: "2",
+      project: { name: "Needs captions", width: 1280, height: 720 },
+      assets: [{ id: "source", path: "missing-source.mp4", kind: "video" }],
+      timeline: {
+        clips: [{ id: "clip", assetId: "source", sourceStart: 0, sourceEnd: 3 }],
+        subtitleProvider: { mode: "openrouter", status: "selected" },
+      },
+      output: { path: "candidate/renders/output.mp4" },
+    });
+
+    const readiness = await checkSubtitleProviderReadiness("/tmp/opencut-caption-gate", plan);
+
+    expect(readiness).toMatchObject({
+      mode: "openrouter",
+      status: "missing",
+      requiredEnv: "OPENROUTER_API_KEY",
+      requiresExternalUploadApproval: true,
+    });
+    if (original) process.env.OPENROUTER_API_KEY = original;
   });
 });

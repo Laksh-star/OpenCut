@@ -12,7 +12,7 @@ We extended the OpenCut rewrite with a working, local-first path from an AI agen
 
 The fork now contains:
 
-- an MCP server that lets agents inspect local media, validate/save/upgrade structured edit plans, build word-timed captions, generate review-candidate captions through approved providers, compile FFmpeg filter graphs, and render previews;
+- an MCP server that lets agents inspect local media, validate/save/upgrade structured edit plans, build word-timed captions, check provider readiness, generate review-candidate captions through approved providers, save reviewer-corrected caption cues, compile FFmpeg filter graphs, and render previews;
 - a browser-based OpenCut review workspace for revising an agent plan, comparing candidates, recording reviewer notes, previewing the current revision, and separately approving the final render;
 - opaque, persistent candidate-review sessions that compare multiple isolated edits without putting plan JSON in the URL;
 - HTTP byte-range streaming for multi-gigabyte local sources, so the reviewer no longer reselects the file in the browser;
@@ -23,7 +23,7 @@ The fork now contains:
 - reusable production presets for caption/title/transition/ducking treatment;
 - candidate strategy/rationale metadata, per-clip rationale, and a clearer six-step review workflow in the UI;
 - WYSIWYG preview-monitor controls for existing visual layers, including drag/resize overlay and title boxes, keyboard nudging, caption safe-zone placement, and schema-backed title-card layout/opacity/font-scale fields;
-- a schema-backed subtitle-provider selector and generation path covering local Whisper, OpenAI API, OpenRouter, and provided SRT/VTT captions, with cost/privacy guidance and explicit upload approval for external providers;
+- a schema-backed subtitle-provider selector and generation path covering local Whisper, OpenAI API, OpenRouter, and provided SRT/VTT captions, with cost/privacy guidance, setup readiness checks, explicit upload approval for external providers, and a manual caption-QA editor that saves corrected text/timing as revisioned local SRT;
 - local export packages that bundle rendered MP4s, approved plans, project records, captions, contact sheets, a manifest, and a summary without copying the original large source video;
 - a one-command setup packager that emits workspace-scoped environment, Codex MCP, and machine-readable setup files;
 - a repo-local user guide that explains what OpenCut controls versus what Codex/agent workflows author;
@@ -84,6 +84,7 @@ The rebased implementation stack is:
 | `2026-07-22 WYSIWYG pass` | Add visual layer adjustment controls | Adds preview-monitor drag/resize/nudge controls for existing overlay and title layers, draggable caption safe-zone placement, schema-backed title-card layout fields, renderer support, docs, and tests. |
 | `2026-07-22 subtitle-provider pass` | Add subtitle provider selection | Added v2 subtitle-provider metadata, review UI provider selector, cost/privacy guidance, schema validation, docs, skill contract updates, and tests as the foundation for provider execution. |
 | `2026-07-22 caption execution pass` | Add provider-backed caption generation | Adds local Whisper/OpenAI/OpenRouter execution adapters, an HTTP review-session generation route, an MCP generation tool, explicit external-upload approval gates, new caption revision audit events, UI provider actions, docs, and tests. |
+| `2026-07-22 caption QA pass` | Add provider readiness and caption QA revisions | Adds FFmpeg/ffprobe/provider setup checks, a review UI setup-check action, a Caption QA editor for cue text/timing, an HTTP/MCP caption revision save path, docs, and targeted tests. |
 
 This report may be followed by documentation-only commits. Exact branch totals
 should be read from Git rather than treated as a fixed figure in this cumulative
@@ -145,7 +146,7 @@ A-roll and adds:
 
 ### 4.2 MCP agent bridge
 
-The new `apps/agent-bridge` package exposes twelve tools:
+The new `apps/agent-bridge` package exposes fourteen tools:
 
 1. `opencut_capabilities`
 2. `opencut_inspect_media`
@@ -155,12 +156,14 @@ The new `apps/agent-bridge` package exposes twelve tools:
 6. `opencut_compile_edit_plan`
 7. `opencut_render_preview`
 8. `opencut_build_word_timed_captions`
-9. `opencut_generate_review_captions`
-10. `opencut_preflight_review_session`
-11. `opencut_approve_and_render_project`
-12. `opencut_create_export_package`
+9. `opencut_check_review_system`
+10. `opencut_generate_review_captions`
+11. `opencut_revise_review_captions`
+12. `opencut_preflight_review_session`
+13. `opencut_approve_and_render_project`
+14. `opencut_create_export_package`
 
-The agent can inspect media with FFprobe, calculate layered output duration, upgrade v1 plans to v2 without losing the primary timeline, atomically save a plan, convert provider-independent word timestamps into speaker-aware SRT cues, generate or confirm captions for a saved review candidate through the approved provider path, inspect the exact shell-free FFmpeg argument list, render a bounded preview, preflight a saved review session before gated actions, persist and render an explicitly approved project, or package rendered candidates for local handoff.
+The agent can inspect media with FFprobe, calculate layered output duration, upgrade v1 plans to v2 without losing the primary timeline, atomically save a plan, convert provider-independent word timestamps into speaker-aware SRT cues, check FFmpeg/ffprobe/subtitle-provider readiness without transcribing or uploading, generate or confirm captions for a saved review candidate through the approved provider path, save human-reviewed caption text/timing as a new revision, inspect the exact shell-free FFmpeg argument list, render a bounded preview, preflight a saved review session before gated actions, persist and render an explicitly approved project, or package rendered candidates for local handoff.
 
 ### 4.3 Safe local execution boundary
 
@@ -175,6 +178,7 @@ The bridge was designed as a constrained local adapter:
 - only MP4 output is supported in this MVP;
 - no publishing operation exists;
 - OpenAI/OpenRouter caption generation is the only upload-capable path, and it requires explicit `externalUploadApproved=true` while uploading only the extracted candidate WAV audio.
+- provider readiness checks are read-only and report only command/API-key/file availability, not secret values;
 
 The new `opencut-setup` command resolves the workspace root and emits a private
 environment file, Codex MCP TOML snippet, and setup manifest inside that root.
@@ -221,7 +225,8 @@ The web app now presents a usable review boundary rather than a placeholder page
 - display agent-authored rationale for why a candidate exists and why a selected source clip was used;
 - guide the reviewer through the concrete six-step path: select, save, captions, preview, approve, and export;
 - directly manipulate existing visual layers on the preview monitor: overlay/title boxes can be dragged, resized, clicked for selection, and keyboard-nudged, while burned-in captions can be dragged between safe top/middle/bottom placement zones;
-- select subtitle-provider metadata with provider-specific cost/privacy guidance, then generate or confirm captions through the local bridge as a new candidate revision;
+- select subtitle-provider metadata with provider-specific cost/privacy guidance, check provider readiness, then generate or confirm captions through the local bridge as a new candidate revision;
+- correct caption cue text and start/end timing in the Caption QA panel, saving the edited SRT as a new local candidate revision before preview/final approval;
 - apply production presets across caption styling, title colors, transition treatment, and ducking;
 - save immutable numbered plan revisions and invalidate stale previews after an edit;
 - display backend preflight results for the active saved revision before preview or final approval;
@@ -420,7 +425,10 @@ caption-execution pass using the repo-local Bun 1.3.11 executable and local web
 tool shims. The browser-workflow and real-output rows below are retained from
 the earlier implementation verification because this pass changed bridge
 caption execution, review UI, docs, the reusable skill, and the workflow
-explainer, not the generated real-media artifacts.
+explainer, not the generated real-media artifacts. On this pass, the local
+session did not have `bun` on `PATH`, so bridge validation used TypeScript
+checking plus web tests/build; the newly added Bun unit tests should be run in
+the normal OpenCut toolchain before release.
 
 | Check | Result |
 | --- | --- |
@@ -429,6 +437,7 @@ explainer, not the generated real-media artifacts.
 | WYSIWYG visual-controls pass | **Pass:** schema-backed title layout fields parse and reject canvas escapes; renderer rasterizes title/caption graphics with the new layout fields; web model tests cover constrained overlay/title canvas boxes; preview monitor UI typechecks with drag/resize/nudge controls. |
 | Subtitle-provider selector pass | **Pass:** v2 plans parse provider metadata for local Whisper, OpenAI API, OpenRouter, and provided captions; schema validation rejects provided-captions mode without an attached caption asset; the review UI typechecks with provider/status/model/language/cost/notes controls. |
 | Caption execution pass | **Pass:** transcription outputs normalize from word, segment, or text responses; API providers reject before extraction without explicit upload approval; provided-caption generation creates a new candidate revision, clears stale preview state, writes revision snapshots, and records caption audit events. |
+| Caption QA pass | **Partial local validation:** TypeScript accepts provider readiness and caption QA revision code; tests were added for cue normalization, provider env readiness, and caption QA revision snapshots, but Bun test execution was unavailable in this session because `bun` was not on `PATH`. |
 | Agent bridge unit tests | **Pass:** 38 tests across v1/v2 schema migration, overlays, title-card layout validation, subtitle-provider validation, provider-backed caption gating/revisions, stale-render immutability, ducked audio, transitions, production graphics, setup packaging, FFmpeg profiles, timed-caption grouping, byte ranges, path security, project paths, immutable revisions, review events, candidate isolation, candidate rationale validation, batch metadata persistence, preflight blockers, and export package creation. |
 | Agent bridge TypeScript check | **Pass:** `tsc --noEmit`. |
 | Agent bridge build | **Pass:** Bun build generated the Node-target bundle. |
@@ -443,7 +452,7 @@ explainer, not the generated real-media artifacts.
 | Production render smoke | **Pass:** generated A-roll, B-roll, music, SRT captions, a crossfade, intro/outro cards, burned captions, selectable captions, and speech-keyed ducking produced a 4.5-second H.264/AAC/`mov_text` MP4; five extracted frames visually confirmed the title and caption overlays. |
 | Setup packager smoke | **Pass:** workspace-scoped environment, Codex MCP TOML, and setup manifest generated; escaping output rejected. |
 | Real output inspection | **Pass:** FFprobe confirmed the expected video, audio, subtitle, duration, resolution, and frame rate. |
-| MCP tool-list smoke | **Pass:** all twelve MCP tools are listed, `opencut_capabilities` reports bridge version `0.8.0`, and capability flags include batch rendering, production-layer editing, WYSIWYG visual controls, title-card layout, subtitle-provider selection/execution, caption generation, preflight checks, and export packages. |
+| MCP tool-list smoke | **Prior pass:** all twelve previous MCP tools were listed at bridge version `0.8.0`. Current code now reports bridge version `0.9.0` and adds `opencut_check_review_system` plus `opencut_revise_review_captions`; rerun this smoke after Bun is available. |
 | Reusable skill validation | **Pass:** `opencut-producer` OpenAI metadata parses with Ruby YAML; bundled session validator accepts synthetic manifests containing `strategy`, `rationale`, `clipRationales`, v2 title-card layout fields, and subtitle-provider metadata. Older local saved sessions failed validation only because their referenced local source media was missing, which is the expected safety behavior. |
 
 ## 9. What each component is responsible for
@@ -457,6 +466,7 @@ explainer, not the generated real-media artifacts.
 - invokes bridge tools and explains the proposed edit;
 - produces provider-independent word-timed caption cues when transcript timing is available;
 - can trigger review-candidate caption generation through local Whisper, OpenAI API, OpenRouter, or provided SRT/VTT paths when the provider and consent requirements are satisfied;
+- can check review-system readiness and save reviewer-corrected caption cues as revisioned local SRT when asked;
 - prepares verification and delivery artifacts;
 - can call preflight and export-package tools for saved review sessions.
 
@@ -465,7 +475,7 @@ explainer, not the generated real-media artifacts.
 - presents the agent's plan in an editor-like visual context;
 - lets the human attach and review local source video;
 - exposes and edits exact source ranges, order, speed, volume, captions, timeline behavior, and existing v2 production controls;
-- lets the reviewer choose the subtitle provider and trigger caption generation or provided-caption confirmation for the selected saved revision;
+- lets the reviewer choose the subtitle provider, check provider readiness, trigger caption generation or provided-caption confirmation, and save manual caption text/timing corrections for the selected saved revision;
 - preserves numbered revisions, reviewer notes, and the audit trail;
 - requires a successful preview for the current revision before final approval;
 - provides explicit single-final and batch approval boundaries;
@@ -481,6 +491,8 @@ explainer, not the generated real-media artifacts.
 - compiles deterministic renderer arguments;
 - derives speaker-aware SRT cues from timed words;
 - extracts review-candidate audio and runs the approved subtitle provider, with external API upload blocked unless explicitly approved;
+- checks FFmpeg, ffprobe, local Whisper/API-key/provided-caption readiness without exposing secrets or uploading media;
+- writes reviewer-corrected caption cues into a new local SRT and numbered revision;
 - records plan/source hashes and agent metadata without storing credentials;
 - connects approved single or batch UI actions to local execution;
 - enforces preflight checks and creates local handoff packages.
@@ -509,7 +521,7 @@ The MVP deliberately does not yet provide:
 - formats other than MP4;
 - remote rendering, uploading, or social publishing;
 - multi-user or remote authentication beyond the loopback-only local boundary and per-process session tokens;
-- automatic resolution of transcription errors, diarization, provider reliability handling, or semantic caption cleanup;
+- automatic resolution of transcription errors, diarization, provider reliability handling, or semantic caption cleanup beyond manual Caption QA;
 - a GitHub pull request from the feature branch to the fork's `main` branch.
 
 ## 11. Recommended next development steps
@@ -521,7 +533,7 @@ foundation:
 1. **Editable review controls — complete.** The reviewer can adjust source in/out points, ordering, speed, volume, and caption inclusion. Saving creates immutable numbered revision snapshots and invalidates older previews.
 2. **Setup/MCP packager — complete.** `opencut-setup` generates workspace-scoped environment, Codex MCP, and setup-manifest files with path-boundary tests.
 3. **Preview versus final-render modes — complete.** Fast `ultrafast`/CRF 32 previews are revision-specific. Final approval remains locked until the current revision has a preview, then uses the separate `medium`/CRF 20 profile.
-4. **Improve transcription and caption alignment — provider execution complete, quality repair pending.** The bridge can now run local Whisper, OpenAI API, OpenRouter, or provided SRT/VTT paths for review candidates, while the provider-independent word-timestamp schema performs speaker-aware cue grouping, gap/sentence segmentation, caption-safe wrapping, and SRT generation. Real-media provider evaluation, diarization, and semantic cleanup remain future work.
+4. **Improve transcription and caption alignment — provider execution and manual QA complete, automatic repair pending.** The bridge can now run local Whisper, OpenAI API, OpenRouter, or provided SRT/VTT paths for review candidates, checks whether the selected provider is configured, and lets reviewers save corrected cue text/timing as a new revision. The provider-independent word-timestamp schema performs speaker-aware cue grouping, gap/sentence segmentation, caption-safe wrapping, and SRT generation. Real-media provider evaluation, diarization, and semantic cleanup remain future work.
 5. **Provenance and revision history — complete.** The workflow records immutable plan revisions, source and plan SHA-256 hashes, optional agent/model metadata, reviewer notes, and append-only selection/preview/approval/render events without storing secrets.
 6. **Multi-track schema and filter graph — complete.** V2 adds validated overlay/audio tracks; the renderer compiles positioned overlays and independently delayed/mixed audio while v1 remains supported.
 7. **Smart audio ducking — complete.** Music-role tracks can be routed through a configurable sidechain compressor keyed from the primary dialogue while the explicit preview/final gates remain unchanged.
@@ -531,11 +543,12 @@ foundation:
 11. **Local export package — complete.** Rendered candidates can be bundled into a local handoff package with outputs, metadata, captions, contact sheets, manifest, and summary.
 12. **Review clarity and candidate rationale — complete.** The session schema now carries candidate strategy, candidate rationale, and per-clip rationale, and the UI explains the select-save-captions-preview-approve-export path.
 13. **WYSIWYG visual adjustment surface — complete.** Existing overlay/title layers can be selected, dragged, resized, keyboard-nudged, and fine-tuned through inspector fields; burned-in captions can be moved between safe placement zones.
-14. **Subtitle-provider selector and execution — complete.** The v2 plan and review UI can record local Whisper, OpenAI API, OpenRouter, or provided SRT/VTT as the caption source with provider-specific cost/privacy notes, and the bridge can generate or confirm captions as a new candidate revision. Automatic caption-quality repair remains future work.
-15. **Formalize the native project adapter.** Map the current plan/project record into OpenCut's Editor API when that upstream contract is stable.
-16. **Add track creation/deletion and keyframes.** The reviewer can edit existing v2 layers today; adding new layers and keyframed motion/effects would move the UI closer to a true OpenCut-native editor.
-17. **Add publication as a separate gated workflow.** Keep export/publishing out of the renderer and require an independent destination-specific approval.
-18. **Open a pull request when ready.** Review the cumulative branch as one coherent local-first agent workflow before merging into the fork's `main` branch.
+14. **Subtitle-provider selector and execution — complete.** The v2 plan and review UI can record local Whisper, OpenAI API, OpenRouter, or provided SRT/VTT as the caption source with provider-specific cost/privacy notes, and the bridge can generate or confirm captions as a new candidate revision.
+15. **Provider readiness and Caption QA — complete.** The review UI and MCP surface can check runtime readiness for FFmpeg, ffprobe, and selected subtitle providers, then save corrected caption cue text/timing as new candidate revisions.
+16. **Formalize the native project adapter.** Map the current plan/project record into OpenCut's Editor API when that upstream contract is stable.
+17. **Add track creation/deletion and keyframes.** The reviewer can edit existing v2 layers today; adding new layers and keyframed motion/effects would move the UI closer to a true OpenCut-native editor.
+18. **Add publication as a separate gated workflow.** Keep export/publishing out of the renderer and require an independent destination-specific approval.
+19. **Open a pull request when ready.** Review the cumulative branch as one coherent local-first agent workflow before merging into the fork's `main` branch.
 
 ## 12. Overall outcome
 

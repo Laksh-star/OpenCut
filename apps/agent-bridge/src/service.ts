@@ -3,7 +3,7 @@ import { posix } from "node:path";
 
 import { compileEditPlan, type RenderProfile } from "./ffmpeg.ts";
 import { preparePlanGraphics } from "./graphics.ts";
-import { alignCaptionWords, captionsToSrt, type CaptionAlignmentOptions } from "./captions.ts";
+import { alignCaptionWords, captionsToSrt, type CaptionAlignmentOptions, type CaptionCue } from "./captions.ts";
 import { readEditPlan, writeEditPlan, writeJsonFile } from "./files.ts";
 import { inspectMedia, runProcess } from "./media.ts";
 import { getWorkspaceRoot, resolveInputPath, resolveOutputPath } from "./paths.ts";
@@ -11,12 +11,13 @@ import { createReviewExportPackage } from "./export-package.ts";
 import { preflightReviewSession, type PreflightMode } from "./preflight.ts";
 import { loadReviewSession, ReviewSessionRegistry } from "./review-session.ts";
 import { getPlanDuration, parseEditPlan, upgradeEditPlanToV2, type EditPlan } from "./schema.ts";
+import { createReviewSystemCheck } from "./system-check.ts";
 
 const MAX_PREVIEW_SECONDS = 300;
 
 export const capabilities = {
   server: "opencut-agent-bridge",
-  version: "0.8.0",
+  version: "0.9.0",
   adapter: "ffmpeg-production-graph",
   editorApiConnected: false,
   operations: [
@@ -27,7 +28,9 @@ export const capabilities = {
     "compile_edit_plan",
     "render_preview",
     "build_word_timed_captions",
+    "check_review_system",
     "generate_review_captions",
+    "revise_review_captions",
     "preflight_review_session",
     "approve_and_render_project",
     "approve_review_batch",
@@ -43,7 +46,9 @@ export const capabilities = {
     burnedInCaptions: true,
     subtitleProviderSelection: true,
     subtitleProviderExecution: true,
+    providerReadinessChecks: true,
     captionGenerationEndpoint: true,
+    captionQaEditor: true,
     subtitleProviders: ["local-whisper", "openai-api", "openrouter", "provided-captions"],
     transitions: true,
     titleCards: true,
@@ -190,6 +195,46 @@ export const generateReviewCaptions = async (
     audioPath: result.audioPath,
     uploadedAudioBytes: result.uploadedAudioBytes,
     estimatedCostUsd: result.estimatedCostUsd,
+    candidateRevision: candidate?.revision,
+  };
+};
+
+export const checkReviewSystem = async (
+  requestedManifestPath: string,
+  options: {
+    candidateId?: string;
+  } = {},
+) => {
+  const root = await getWorkspaceRoot();
+  const manifestPath = await resolveInputPath(root, requestedManifestPath);
+  const session = await loadReviewSession(manifestPath);
+  return createReviewSystemCheck(root, session, options.candidateId);
+};
+
+export const reviseReviewCaptions = async (
+  requestedManifestPath: string,
+  options: {
+    candidateId: string;
+    cues: CaptionCue[];
+    note?: string;
+  },
+) => {
+  const registry = new ReviewSessionRegistry();
+  const registered = await registry.register(requestedManifestPath);
+  const loaded = await registry.load(registered.sessionId);
+  if (loaded.selectedCandidateId && loaded.selectedCandidateId !== options.candidateId) {
+    throw new Error("Candidate must be selected in the review session before caption QA edits");
+  }
+  const { captionsPath, cues, session } = await registry.reviseCaptions(
+    registered.sessionId,
+    options.candidateId,
+    options.cues,
+    options.note,
+  );
+  const candidate = session.candidates.find((entry) => entry.id === options.candidateId);
+  return {
+    captionsPath,
+    cues: cues.length,
     candidateRevision: candidate?.revision,
   };
 };

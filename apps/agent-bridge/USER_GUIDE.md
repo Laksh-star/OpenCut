@@ -25,8 +25,9 @@ The review UI is a human approval boundary. Work left to right:
 1. **Select** — choose a candidate to inspect. This does not render.
 2. **Save** — if you change timing, captions, or production settings, save a new
    revision.
-3. **Generate captions** — when needed, run the selected subtitle provider or
-   confirm an attached SRT/VTT file. This creates a new revision.
+3. **Captions** — check provider setup, generate or confirm captions when
+   needed, and correct subtitle text/timing. Generation and QA saves create new
+   revisions.
 4. **Preview** — render a fast preview for the exact saved revision.
 5. **Approve** — approve one final render, or add preview-ready candidates to a
    batch and approve the batch.
@@ -83,14 +84,24 @@ can run the selected provider:
 - supplied local SRT/VTT files.
 
 The selector includes local/external privacy and cost notes. Press **Generate
-captions** after selecting the provider. Local Whisper stays on this machine and
-requires a local Whisper command available to the bridge process. OpenAI API and
-OpenRouter modes ask for upload confirmation before sending the extracted
-candidate WAV audio, and require the matching API key in the bridge process
-environment. A successful provider pass saves an SRT asset into the candidate
-directory, attaches it to the edit plan, creates a new numbered revision, and
-invalidates any older preview. Check the caption preview and ask for a fresh
-caption pass when timing, line breaks, spelling, or speaker context are weak.
+captions** after selecting the provider. Use **Check setup** first if you are
+not sure the bridge can see FFmpeg, ffprobe, the local Whisper command, the
+OpenAI/OpenRouter API key, or the supplied caption file. This check is
+read-only: it does not transcribe, render, upload, or change files.
+
+Local Whisper stays on this machine and requires a local Whisper command
+available to the bridge process. OpenAI API and OpenRouter modes ask for upload
+confirmation before sending the extracted candidate WAV audio, and require the
+matching API key in the bridge process environment. A successful provider pass
+saves an SRT asset into the candidate directory, attaches it to the edit plan,
+creates a new numbered revision, and invalidates any older preview.
+
+After captions are loaded, use **Caption QA** to fix obvious spelling, wording,
+and timing errors. Editing a cue does not change the render until you press
+**Save caption revision**. That save writes a new local SRT file inside the
+candidate directory, creates a new numbered revision, and locks preview/final
+approval until a fresh preview is rendered. If you change your mind, press
+**Reset** before previewing.
 
 ## Hard boundaries
 

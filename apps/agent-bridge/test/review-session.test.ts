@@ -172,6 +172,44 @@ describe("review sessions", () => {
     ]);
   });
 
+  test("saves caption QA edits as a new revision and clears stale previews", async () => {
+    const root = await fixture();
+    process.env.OPENCUT_AGENT_ROOT = root;
+    const registry = new ReviewSessionRegistry();
+    const registered = await registry.register("review-session.json");
+    await registry.update(registered.sessionId, (session) => ({
+      ...session,
+      selectedCandidateId: "candidate",
+      candidates: session.candidates.map((candidate) => ({
+        ...candidate,
+        status: "preview-ready",
+        lastPreviewRevision: 1,
+        previewOutputPath: "candidate/renders/preview-r1.mp4",
+      })),
+    }));
+
+    const { captionsPath, cues, session } = await registry.reviseCaptions(
+      registered.sessionId,
+      "candidate",
+      [{ start: 0, end: 1.25, text: "Corrected caption text" }],
+      "Fix caption wording",
+    );
+
+    expect(captionsPath).toBe("candidate/captions/candidate-qa-r2.srt");
+    expect(cues).toEqual([{ start: 0, end: 1.25, text: "Corrected caption text" }]);
+    expect(session.candidates[0]?.revision).toBe(2);
+    expect(session.candidates[0]?.lastPreviewRevision).toBeUndefined();
+    expect(session.candidates[0]?.previewOutputPath).toBeUndefined();
+    expect(await readFile(join(root, captionsPath), "utf8")).toContain("Corrected caption text");
+    const revisedPlan = JSON.parse(await readFile(join(root, "candidate", "edit-plan.json"), "utf8"));
+    expect(revisedPlan.assets.find((asset: { id: string }) => asset.id === "captions")?.path).toBe(captionsPath);
+    expect(revisedPlan.timeline.subtitleProvider).toMatchObject({
+      mode: "provided-captions",
+      status: "provided",
+    });
+    expect(session.events.map((event) => event.type)).toContain("captions-revised");
+  });
+
   test("blocks final preflight until the current revision has a preview", async () => {
     const root = await fixture();
     process.env.OPENCUT_AGENT_ROOT = root;

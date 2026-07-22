@@ -8,6 +8,7 @@ import { extname, posix } from "node:path";
 
 import { z } from "zod/v4";
 
+import { captionCuesSchema } from "./captions.ts";
 import { getWorkspaceRoot, resolveInputPath } from "./paths.ts";
 import { parseByteRange } from "./range.ts";
 import { createReviewEvent, ReviewSessionRegistry } from "./review-session.ts";
@@ -15,6 +16,7 @@ import { createReviewExportPackage } from "./export-package.ts";
 import { assertPreflightEligible, preflightReviewSession } from "./preflight.ts";
 import { approveAndRenderProject, capabilities, renderPlanValue } from "./service.ts";
 import { editPlanSchema } from "./schema.ts";
+import { createReviewSystemCheck } from "./system-check.ts";
 
 const host = "127.0.0.1";
 const port = Number(process.env.OPENCUT_AGENT_HTTP_PORT ?? 3210);
@@ -52,6 +54,12 @@ const generateCaptionsSchema = z.object({
   candidateId: z.string().min(1),
   approvalToken: z.string().uuid(),
   externalUploadApproved: z.boolean().default(false),
+});
+const reviseCaptionsSchema = z.object({
+  candidateId: z.string().min(1),
+  approvalToken: z.string().uuid(),
+  cues: captionCuesSchema,
+  note: z.string().trim().max(1_000).optional(),
 });
 const approveSessionCandidateSchema = z.object({
   candidateId: z.string().min(1),
@@ -314,6 +322,19 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    const systemCheckRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/system-check$/);
+    if (request.method === "GET" && systemCheckRoute) {
+      const root = await getWorkspaceRoot();
+      const session = await registry.load(systemCheckRoute[0]!);
+      sendJson(
+        request,
+        response,
+        200,
+        await createReviewSystemCheck(root, session, requestUrl.searchParams.get("candidateId") ?? undefined),
+      );
+      return;
+    }
+
     const generateCaptionsRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/generate-captions$/);
     if (request.method === "POST" && generateCaptionsRoute) {
       if (approvalInProgress) {
@@ -345,6 +366,43 @@ const server = createServer(async (request, response) => {
           audioPath: result.audioPath,
           uploadedAudioBytes: result.uploadedAudioBytes,
           estimatedCostUsd: result.estimatedCostUsd,
+          session,
+        });
+      } finally {
+        approvalInProgress = false;
+      }
+      return;
+    }
+
+    const reviseCaptionsRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/revise-captions$/);
+    if (request.method === "POST" && reviseCaptionsRoute) {
+      if (approvalInProgress) {
+        sendJson(request, response, 409, { error: "Another local render or caption action is already in progress" });
+        return;
+      }
+      const input = reviseCaptionsSchema.parse(await readJsonBody(request));
+      const registered = registry.get(reviseCaptionsRoute[0]!);
+      if (registered.approvalToken !== input.approvalToken) {
+        sendJson(request, response, 403, { error: "Invalid review action token" });
+        return;
+      }
+      const loaded = await registry.load(reviseCaptionsRoute[0]!);
+      if (loaded.selectedCandidateId !== input.candidateId) throw new Error("Candidate must be selected before caption QA edits");
+      const candidate = loaded.candidates.find((entry) => entry.id === input.candidateId);
+      if (!candidate) throw new Error("Unknown candidate");
+      if (candidate.outputExists || candidate.status === "rendered") throw new Error("Rendered candidates are immutable");
+      if (candidate.status === "queued" || candidate.status === "rendering") throw new Error("Queued or rendering candidates cannot revise captions");
+      approvalInProgress = true;
+      try {
+        const { captionsPath, cues, session } = await registry.reviseCaptions(
+          reviseCaptionsRoute[0]!,
+          input.candidateId,
+          input.cues,
+          input.note,
+        );
+        sendJson(request, response, 200, {
+          captionsPath,
+          cues: cues.length,
           session,
         });
       } finally {

@@ -4,6 +4,7 @@ import { z } from "zod/v4";
 import {
   approveAndRenderProject,
   buildWordTimedCaptions,
+  checkReviewSystem,
   capabilities,
   compilePlanFile,
   createReviewExportPackageFromManifest,
@@ -11,12 +12,13 @@ import {
   inspectWorkspaceMedia,
   preflightReviewManifest,
   renderPlanPreview,
+  reviseReviewCaptions,
   savePlan,
   upgradePlan,
   validatePlan,
 } from "./service.ts";
 import { editPlanSchema } from "./schema.ts";
-import { timedTranscriptSchema } from "./captions.ts";
+import { captionCuesSchema, timedTranscriptSchema } from "./captions.ts";
 
 const jsonResult = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -24,7 +26,7 @@ const jsonResult = (value: unknown) => ({
 
 export const buildServer = () => {
   const server = new McpServer(
-    { name: "opencut-agent-bridge", version: "0.8.0" },
+    { name: "opencut-agent-bridge", version: "0.9.0" },
     {
       instructions:
         "Inspect media before creating an edit plan. Validate, save, and compile the plan before rendering. Rendering only creates a local preview; this server never publishes media.",
@@ -142,6 +144,21 @@ export const buildServer = () => {
   );
 
   server.registerTool(
+    "opencut_check_review_system",
+    {
+      description:
+        "Run read-only runtime checks for a review session, including ffmpeg, ffprobe, and the selected subtitle provider. This does not render, transcribe, upload, or modify files.",
+      inputSchema: z.object({
+        manifestPath: z.string().min(1),
+        candidateId: z.string().min(1).optional(),
+      }),
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async ({ manifestPath, candidateId }) =>
+      jsonResult(await checkReviewSystem(manifestPath, { candidateId }))
+  );
+
+  server.registerTool(
     "opencut_generate_review_captions",
     {
       description:
@@ -155,6 +172,23 @@ export const buildServer = () => {
     },
     async ({ manifestPath, candidateId, externalUploadApproved }) =>
       jsonResult(await generateReviewCaptions(manifestPath, { candidateId, externalUploadApproved }))
+  );
+
+  server.registerTool(
+    "opencut_revise_review_captions",
+    {
+      description:
+        "Save human-reviewed caption text/timing for a review-session candidate as a new editable revision. This writes a new local SRT file and clears stale previews; it never uploads media.",
+      inputSchema: z.object({
+        manifestPath: z.string().min(1),
+        candidateId: z.string().min(1),
+        cues: captionCuesSchema,
+        note: z.string().trim().max(1_000).optional(),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async ({ manifestPath, candidateId, cues, note }) =>
+      jsonResult(await reviseReviewCaptions(manifestPath, { candidateId, cues, note }))
   );
 
   server.registerTool(

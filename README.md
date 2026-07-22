@@ -103,6 +103,7 @@ In the review workspace you can:
 13. Edit v2 overlays, audio tracks, transitions, title cards, styled captions, ducking, and all layered media assets before previewing the compiled result.
 14. Drag and resize existing overlay/title boxes directly on the preview monitor, nudge them with the keyboard, and reposition burned-in captions by dragging their preview box.
 15. Choose and run the subtitle provider for the candidate: local Whisper, OpenAI API, OpenRouter, or supplied SRT/VTT captions. External API modes require an explicit upload confirmation before extracted candidate audio leaves the machine.
+16. Check provider readiness before caption work, then correct caption text/timing in the Caption QA panel and save those edits as a new revision before preview/final approval.
 
 This is intentionally a review boundary, not a claim that the rewrite already
 has a complete editor. The current revision adapter remains FFmpeg-backed and
@@ -110,9 +111,10 @@ will move behind the native Editor API when that API lands.
 
 Current product gaps are tracked explicitly: the WYSIWYG surface edits existing
 agent-authored visual layers rather than creating new tracks or arbitrary
-keyframed effects. Subtitle-provider execution now exists in the local bridge,
-but quality repair, diarization, and provider availability still depend on the
-chosen local Whisper install or configured API keys.
+keyframed effects. Subtitle-provider execution, setup checks, and manual caption
+QA now exist in the local bridge, but automatic semantic cleanup, diarization,
+and provider reliability handling still depend on future workflow improvements
+and the chosen local Whisper install or configured API keys.
 
 ## Contributing
 

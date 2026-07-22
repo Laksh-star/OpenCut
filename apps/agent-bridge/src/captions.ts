@@ -15,7 +15,17 @@ export const timedTranscriptSchema = z.object({
 });
 
 export type TimedWord = z.infer<typeof timedWordSchema>;
-export type CaptionCue = { start: number; end: number; text: string; speaker?: string };
+
+export const captionCueSchema = z.object({
+  start: z.number().min(0),
+  end: z.number().positive(),
+  text: z.string().trim().min(1).max(500),
+  speaker: z.string().trim().min(1).max(120).optional(),
+}).refine((cue) => cue.end > cue.start, { message: "Caption cue end must be after start" });
+
+export const captionCuesSchema = z.array(captionCueSchema).min(1).max(500);
+
+export type CaptionCue = z.infer<typeof captionCueSchema>;
 
 export type CaptionAlignmentOptions = {
   maximumCharactersPerLine?: number;
@@ -27,6 +37,16 @@ export type CaptionAlignmentOptions = {
 
 const normalizeWord = (value: string) => value.replace(/\s+/g, " ").trim();
 const sentenceEnd = (value: string) => /[.!?][”’"']?$/.test(value);
+
+export const normalizeCaptionCues = (value: unknown): CaptionCue[] =>
+  captionCuesSchema.parse(value)
+    .map((cue) => ({
+      ...cue,
+      start: Number(cue.start.toFixed(3)),
+      end: Number(cue.end.toFixed(3)),
+      text: cue.text.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim(),
+    }))
+    .sort((left, right) => left.start - right.start || left.end - right.end);
 
 const wrapCaption = (words: string[], lineLength: number, maximumLines: number) => {
   const lines: string[] = [];

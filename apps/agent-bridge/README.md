@@ -1,6 +1,6 @@
 # OpenCut Agent Bridge
 
-This package is the first working seam between AI agents and the OpenCut rewrite. It exposes a local MCP server that can inspect media, validate and save declarative edit plans, upgrade v1 plans to the v2 production contract, compile deterministic FFmpeg filter graphs, run review-session preflight checks, generate or confirm review-candidate captions through approved subtitle providers, render bounded MP4 previews with layered video, speech-keyed music ducking, transitions, title cards, styled captions, schema-backed subtitle-provider metadata, and create local handoff packages for rendered candidates.
+This package is the first working seam between AI agents and the OpenCut rewrite. It exposes a local MCP server that can inspect media, validate and save declarative edit plans, upgrade v1 plans to the v2 production contract, compile deterministic FFmpeg filter graphs, run review-session preflight checks, check caption-provider readiness, generate or confirm review-candidate captions through approved subtitle providers, save reviewer-corrected caption text/timing as new revisions, render bounded MP4 previews with layered video, speech-keyed music ducking, transitions, title cards, styled captions, schema-backed subtitle-provider metadata, and create local handoff packages for rendered candidates.
 
 It does **not** automate the browser, publish media, or claim to be OpenCut's future Editor API. The adapter is deliberately isolated so the FFmpeg preview backend can later be replaced by OpenCut's native API and headless renderer.
 
@@ -14,7 +14,9 @@ It does **not** automate the browser, publish media, or claim to be OpenCut's fu
 - `opencut_compile_edit_plan`
 - `opencut_render_preview`
 - `opencut_build_word_timed_captions`
+- `opencut_check_review_system`
 - `opencut_generate_review_captions`
+- `opencut_revise_review_captions`
 - `opencut_preflight_review_session`
 - `opencut_approve_and_render_project`
 - `opencut_create_export_package`
@@ -118,10 +120,12 @@ OPENCUT_AGENT_ROOT = "/absolute/path/to/video-workspace"
 4. Validate and save it.
 5. Compile it and review the returned FFmpeg argv.
 6. Render a short preview.
-7. If captions are missing or need replacement, run `opencut_generate_review_captions` or the review UI's **Generate captions** action. External API modes require explicit upload approval.
-8. Run review-session preflight before preview, final, batch, or export actions.
-9. Ask for human approval before a longer render or any publishing workflow.
-10. Package rendered candidates for local delivery without copying the original source video.
+7. Run `opencut_check_review_system` or the review UI's **Check setup** action before caption work to verify FFmpeg, ffprobe, and the selected provider's local command/API key/caption file.
+8. If captions are missing or need replacement, run `opencut_generate_review_captions` or the review UI's **Generate captions** action. External API modes require explicit upload approval.
+9. If subtitles need correction, run `opencut_revise_review_captions` or use the review UI's **Caption QA** panel to save corrected text/timing as a new revision.
+10. Run review-session preflight before preview, final, batch, or export actions.
+11. Ask for human approval before a longer render or any publishing workflow.
+12. Package rendered candidates for local delivery without copying the original source video.
 
 Version 1 remains supported unchanged. Version 2 keeps the sequential clips as
 the primary A-roll and adds z-ordered video overlay tracks, independent audio
@@ -165,10 +169,14 @@ range/canvas placement/fit/opacity/audio, audio track role/timing/source/volume,
 transition type/duration, title-card text/timing/colors/layout/opacity/font
 scale, subtitle-provider metadata, caption style, and smart ducking. The
 subtitle provider selector exposes local Whisper, OpenAI API, OpenRouter, or
-provided captions with cost/privacy guidance. The adjacent generation action can
-then confirm an attached caption asset or extract the selected candidate's audio
-and run the approved provider. The resulting SRT is attached to the plan as a
-new numbered revision and invalidates any older preview.
+provided captions with cost/privacy guidance. The adjacent setup check verifies
+the bridge can see FFmpeg/ffprobe plus the selected provider's command, API key,
+or supplied caption file without rendering, transcribing, or uploading. The
+generation action can then confirm an attached caption asset or extract the
+selected candidate's audio and run the approved provider. The resulting SRT is
+attached to the plan as a new numbered revision and invalidates any older
+preview. The Caption QA panel can edit cue text and start/end times, then save a
+new local SRT and revision before preview/final approval.
 The preview monitor also provides a WYSIWYG layer surface for existing visual
 elements: overlay/title boxes can be dragged, resized, clicked for selection,
 and keyboard-nudged, while burned-in caption placement can be moved between safe
@@ -245,11 +253,12 @@ selected candidate after refresh, loads only session-authorized captions,
 detects already-rendered outputs, and never asks the reviewer to select the
 multi-gigabyte source file again.
 
-Candidate selection, preview rendering, batch inclusion, and final approval are
+Candidate selection, provider setup checks, caption QA saves, preview rendering, batch inclusion, and final approval are
 deliberately separate actions. Selecting a card cannot start FFmpeg. The visible
 six-step workflow explains the current state: **Select**, **Save**,
 **Captions**, **Preview**, **Approve**, and **Export**. Caption generation or
-provided-caption confirmation creates a new revision. The **Render preview** action produces
+provided-caption confirmation creates a new revision, and caption QA edits must
+be saved or reset before a preview/final render. The **Render preview** action produces
 a fast revision-specific file; **Approve final** stays locked until that exact
 revision has a preview. Preview-approved candidates can also be added to a batch
 queue and rendered sequentially through one explicit **Approve batch** action.
@@ -272,7 +281,9 @@ The HTTP surface for this workflow is:
 - `POST /v1/review-sessions/:id/notes` — append a revision-specific reviewer note;
 - `GET|HEAD /v1/review-sessions/:id/media/:assetId` — authorized range streaming;
 - `GET /v1/review-sessions/:id/candidates/:candidateId/captions` — authorized captions;
+- `GET /v1/review-sessions/:id/system-check` — read-only FFmpeg/ffprobe/provider readiness checks;
 - `POST /v1/review-sessions/:id/generate-captions` — token-gated caption generation or provided-caption confirmation for the selected candidate;
+- `POST /v1/review-sessions/:id/revise-captions` — token-gated caption text/timing QA save as a new revision;
 - `POST /v1/review-sessions/:id/preflight` — read-only checks before preview, final, batch, or export actions;
 - `POST /v1/review-sessions/:id/render-preview` — token-gated fast preview;
 - `GET|HEAD /v1/review-sessions/:id/candidates/:candidateId/preview` — stream the authorized preview;

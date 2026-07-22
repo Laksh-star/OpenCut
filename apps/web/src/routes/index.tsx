@@ -111,6 +111,52 @@ type CaptionGenerationResult = {
   session: ReviewSession
 }
 
+type ReadinessStatus = "ready" | "missing" | "not-required"
+
+type ReadinessCheck = {
+  id: string
+  label: string
+  status: ReadinessStatus
+  detail: string
+  command?: string
+  requiredEnv?: string
+}
+
+type SubtitleProviderReadiness = {
+  mode: SubtitleProviderMode
+  status: ReadinessStatus
+  label: string
+  detail: string
+  requiresExternalUploadApproval: boolean
+  command?: string
+  requiredEnv?: string
+  model?: string
+  captionsPath?: string
+  cues?: number
+}
+
+type ReviewSystemCheck = {
+  bridge: ReadinessCheck
+  ffmpeg: ReadinessCheck
+  ffprobe: ReadinessCheck
+  subtitleProvider: SubtitleProviderReadiness
+  candidate?: {
+    id: string
+    title: string
+    revision: number
+    status: string
+    planPath: string
+    outputExists: boolean
+    previewExists: boolean
+  }
+}
+
+type CaptionRevisionResult = {
+  captionsPath: string
+  cues: number
+  session: ReviewSession
+}
+
 const bridgeUrl = (
   import.meta.env.VITE_OPENCUT_BRIDGE_URL ?? "http://127.0.0.1:3210"
 ).replace(/\/$/, "")
@@ -146,12 +192,19 @@ function AgentReviewWorkspace() {
     sampleEditPlan.timeline.clips[0]?.sourceStart ?? 0,
   )
   const [captionCues, setCaptionCues] = useState<CaptionCue[]>([])
+  const [captionDraftCues, setCaptionDraftCues] = useState<CaptionCue[]>([])
   const [captionsEnabled, setCaptionsEnabled] = useState(false)
   const [captionsLoading, setCaptionsLoading] = useState(false)
   const [captionsError, setCaptionsError] = useState<string | null>(null)
   const [captionGenerationLoading, setCaptionGenerationLoading] = useState(false)
   const [captionGenerationError, setCaptionGenerationError] = useState<string | null>(null)
   const [captionGenerationResult, setCaptionGenerationResult] = useState<CaptionGenerationResult | null>(null)
+  const [captionRevisionLoading, setCaptionRevisionLoading] = useState(false)
+  const [captionRevisionError, setCaptionRevisionError] = useState<string | null>(null)
+  const [captionRevisionResult, setCaptionRevisionResult] = useState<CaptionRevisionResult | null>(null)
+  const [systemCheck, setSystemCheck] = useState<ReviewSystemCheck | null>(null)
+  const [systemCheckLoading, setSystemCheckLoading] = useState(false)
+  const [systemCheckError, setSystemCheckError] = useState<string | null>(null)
   const [reviewSession, setReviewSession] = useState<ReviewSession | null>(null)
   const [activeReviewCandidateId, setActiveReviewCandidateId] = useState<string | null>(null)
   const [sessionError, setSessionError] = useState<string | null>(null)
@@ -198,6 +251,7 @@ function AgentReviewWorkspace() {
     (entry) => entry.clipId === selectedSegment?.clip.id,
   )
   const planIsDirty = Boolean(activeCandidate && JSON.stringify(activeCandidate.plan) !== JSON.stringify(plan))
+  const captionDraftDirty = Boolean(captionsPath && JSON.stringify(captionDraftCues) !== JSON.stringify(captionCues))
   const hasCurrentPreview = candidateHasCurrentPreview(activeCandidate)
   const sessionId = typeof window === "undefined"
     ? null
@@ -215,7 +269,7 @@ function AgentReviewWorkspace() {
     .filter((candidate) => candidate.outputExists || candidate.status === "rendered")
     .map((candidate) => candidate.id) ?? []
   const latestBatchActive = latestBatch?.status === "queued" || latestBatch?.status === "rendering"
-  const interactionLocked = reviewState === "saving" || reviewState === "previewing" || reviewState === "rendering" || batchRendering || latestBatchActive || captionGenerationLoading
+  const interactionLocked = reviewState === "saving" || reviewState === "previewing" || reviewState === "rendering" || batchRendering || latestBatchActive || captionGenerationLoading || captionRevisionLoading
   const canEditPlan = Boolean(
     reviewSession &&
     activeCandidate &&
@@ -235,7 +289,7 @@ function AgentReviewWorkspace() {
   }, [reviewSession])
 
   useEffect(() => {
-    if (!reviewSession || !activeCandidate || !sessionId || planIsDirty) {
+    if (!reviewSession || !activeCandidate || !sessionId || planIsDirty || captionDraftDirty) {
       setPreflight(null)
       setPreflightError(null)
       setPreflightLoading(false)
@@ -267,7 +321,7 @@ function AgentReviewWorkspace() {
         if (!controller.signal.aborted) setPreflightLoading(false)
       })
     return () => controller.abort()
-  }, [activeCandidate?.id, activeCandidate?.revision, hasCurrentPreview, planIsDirty, reviewSession, sessionId])
+  }, [activeCandidate?.id, activeCandidate?.revision, captionDraftDirty, hasCurrentPreview, planIsDirty, reviewSession, sessionId])
 
   useEffect(() => {
     return () => {
@@ -349,6 +403,10 @@ function AgentReviewWorkspace() {
     setApprovalError(candidate.error ?? null)
     setCaptionGenerationError(null)
     setCaptionGenerationResult(null)
+    setCaptionRevisionError(null)
+    setCaptionRevisionResult(null)
+    setSystemCheckError(null)
+    setSystemCheck(null)
     setPlanError(null)
     setRevisionNote("")
     const asset = mediaAssetForPlan(session, candidate.plan)
@@ -381,6 +439,10 @@ function AgentReviewWorkspace() {
 
   function reviseSelectedClip(patch: Partial<EditPlan["timeline"]["clips"][number]>) {
     if (!selectedSegment || !canEditPlan) return
+    if (captionDraftDirty) {
+      setPlanError("Save or reset caption QA edits before changing timeline controls")
+      return
+    }
     try {
       setPlan(updatePlanClip(plan, selectedSegment.clip.id, patch))
       setPlanError(null)
@@ -391,6 +453,10 @@ function AgentReviewWorkspace() {
 
   async function saveRevision() {
     if (!reviewSession || !activeCandidate || !planIsDirty || interactionLocked) return
+    if (captionDraftDirty) {
+      setSessionError("Save or reset caption QA edits before saving timeline/style changes")
+      return
+    }
     setReviewState("saving")
     setSessionError(null)
     try {
@@ -411,7 +477,7 @@ function AgentReviewWorkspace() {
   }
 
   async function renderPreview() {
-    if (!reviewSession || !activeCandidate || planIsDirty || interactionLocked) return
+    if (!reviewSession || !activeCandidate || planIsDirty || captionDraftDirty || interactionLocked) return
     setReviewState("previewing")
     setApprovalError(null)
     try {
@@ -476,6 +542,54 @@ function AgentReviewWorkspace() {
     }
   }
 
+  async function runSystemCheck() {
+    if (!reviewSession || !activeCandidate || !sessionId || planIsDirty || systemCheckLoading) return
+    setSystemCheckLoading(true)
+    setSystemCheckError(null)
+    try {
+      const response = await fetch(
+        `${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/system-check?candidateId=${encodeURIComponent(activeCandidate.id)}`,
+      )
+      const payload = (await response.json()) as ReviewSystemCheck & { error?: string }
+      if (!response.ok) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+      setSystemCheck(payload)
+    } catch (error) {
+      setSystemCheckError(error instanceof Error ? error.message : "Could not run the system check")
+    } finally {
+      setSystemCheckLoading(false)
+    }
+  }
+
+  async function saveCaptionRevision() {
+    if (!reviewSession || !activeCandidate || !captionDraftDirty || planIsDirty || interactionLocked) return
+    setCaptionRevisionLoading(true)
+    setCaptionRevisionError(null)
+    setCaptionRevisionResult(null)
+    try {
+      const response = await fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId ?? "")}/revise-captions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          candidateId: activeCandidate.id,
+          approvalToken: reviewSession.approvalToken,
+          cues: captionDraftCues,
+          note: "Caption QA edits from review UI",
+        }),
+      })
+      const payload = (await response.json()) as CaptionRevisionResult & { error?: string }
+      if (!response.ok || !payload.session) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+      setReviewSession(payload.session)
+      const candidate = candidateForSelection(payload.session)
+      if (candidate) applyReviewCandidate(payload.session, candidate)
+      setCaptionsEnabled(true)
+      setCaptionRevisionResult(payload)
+    } catch (error) {
+      setCaptionRevisionError(error instanceof Error ? error.message : "Could not save caption QA edits")
+    } finally {
+      setCaptionRevisionLoading(false)
+    }
+  }
+
   async function addReviewerNote() {
     if (!reviewSession || !activeCandidate || !reviewerNote.trim()) return
     setSessionError(null)
@@ -497,6 +611,7 @@ function AgentReviewWorkspace() {
   useEffect(() => {
     const controller = new AbortController()
     setCaptionCues([])
+    setCaptionDraftCues([])
     setCaptionsEnabled(false)
     setCaptionsError(null)
     if (!captionsPath) {
@@ -521,6 +636,7 @@ function AgentReviewWorkspace() {
         const cues = parseCaptionFile(payload.contents)
         if (cues.length === 0) throw new Error("No caption cues were found")
         setCaptionCues(cues)
+        setCaptionDraftCues(cues)
       })
       .catch((error) => {
         if (controller.signal.aborted) return
@@ -579,6 +695,10 @@ function AgentReviewWorkspace() {
 
   function reviseProductionPlan(edit: (current: EditPlan) => EditPlan) {
     if (!canEditPlan) return
+    if (captionDraftDirty) {
+      setPlanError("Save or reset caption QA edits before changing production controls")
+      return
+    }
     try {
       setPlan(edit(plan))
       setPlanError(null)
@@ -765,6 +885,7 @@ function AgentReviewWorkspace() {
       const selectedCandidate = reviewSession ? candidateForSelection(reviewSession) : null
       if (reviewSession && !selectedCandidate) throw new Error("Select a candidate before approval")
       if (reviewSession && planIsDirty) throw new Error("Save the current revision before final approval")
+      if (reviewSession && captionDraftDirty) throw new Error("Save caption QA edits before final approval")
       if (reviewSession && !candidateHasCurrentPreview(selectedCandidate ?? undefined)) {
         throw new Error("Render and review a preview of this revision before final approval")
       }
@@ -896,6 +1017,7 @@ function AgentReviewWorkspace() {
               disabled={
                 !reviewSession.selectedCandidateId ||
                 planIsDirty ||
+                captionDraftDirty ||
                 interactionLocked ||
                 reviewState === "rendered" ||
                 (!hasCurrentPreview && activePreflightBlocks > 0)
@@ -921,7 +1043,7 @@ function AgentReviewWorkspace() {
               batchRendering ||
               latestBatchActive ||
               reviewState === "rendered" ||
-              Boolean(reviewSession && (!reviewSession.selectedCandidateId || planIsDirty || !hasCurrentPreview))
+              Boolean(reviewSession && (!reviewSession.selectedCandidateId || planIsDirty || captionDraftDirty || !hasCurrentPreview))
               || Boolean(reviewSession && hasCurrentPreview && activePreflightBlocks > 0)
             }
             onClick={() => void approveAndRender()}
@@ -960,6 +1082,7 @@ function AgentReviewWorkspace() {
           <ReviewWorkflowPanel
             activeCandidate={activeCandidate}
             planIsDirty={planIsDirty}
+            captionDraftDirty={captionDraftDirty}
             hasCurrentPreview={hasCurrentPreview}
             batchCandidateCount={batchCandidateIds.length}
             renderedCandidateCount={renderedCandidateIds.length}
@@ -1316,7 +1439,7 @@ function AgentReviewWorkspace() {
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={plan.timeline.clips[0]?.id === selectedSegment.clip.id || !canEditPlan}
+                      disabled={plan.timeline.clips[0]?.id === selectedSegment.clip.id || !canEditPlan || captionDraftDirty}
                       onClick={() => setPlan(movePlanClip(plan, selectedSegment.clip.id, -1))}
                     >
                       <ArrowUp /> Earlier
@@ -1324,7 +1447,7 @@ function AgentReviewWorkspace() {
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={plan.timeline.clips.at(-1)?.id === selectedSegment.clip.id || !canEditPlan}
+                      disabled={plan.timeline.clips.at(-1)?.id === selectedSegment.clip.id || !canEditPlan || captionDraftDirty}
                       onClick={() => setPlan(movePlanClip(plan, selectedSegment.clip.id, 1))}
                     >
                       <ArrowDown /> Later
@@ -1380,7 +1503,7 @@ function AgentReviewWorkspace() {
                   <button
                     className={`flex w-full items-center justify-between rounded-md border px-2.5 py-2 text-[10px] transition ${plan.timeline.captionsAssetId ? "border-violet-300/30 bg-violet-400/10 text-violet-200" : "border-white/10 text-zinc-500"}`}
                     onClick={() => setPlan(setPlanCaptionsEnabled(plan, !plan.timeline.captionsAssetId))}
-                    disabled={!plan.assets.some((asset) => asset.kind === "captions") || !canEditPlan}
+                    disabled={!plan.assets.some((asset) => asset.kind === "captions") || !canEditPlan || captionDraftDirty}
                     aria-pressed={Boolean(plan.timeline.captionsAssetId)}
                   >
                     <span className="flex items-center gap-1.5"><Captions className="size-3" /> Include captions</span>
@@ -1390,11 +1513,14 @@ function AgentReviewWorkspace() {
               </InspectorSection>
               <ProductionInspector
                 plan={plan}
-                disabled={!canEditPlan}
+                disabled={!canEditPlan || captionDraftDirty}
                 planIsDirty={planIsDirty}
                 captionGenerationLoading={captionGenerationLoading}
                 captionGenerationError={captionGenerationError}
                 captionGenerationResult={captionGenerationResult}
+                systemCheck={systemCheck}
+                systemCheckLoading={systemCheckLoading}
+                systemCheckError={systemCheckError}
                 selectedOverlayClipId={selectedOverlayClipId}
                 selectedAudioTrackId={selectedAudioTrackId}
                 selectedAudioClipId={selectedAudioClipId}
@@ -1409,14 +1535,41 @@ function AgentReviewWorkspace() {
                 onSelectAudioClip={setSelectedAudioClipId}
                 onSelectTransition={setSelectedTransitionId}
                 onSelectTitleCard={setSelectedTitleCardId}
+                onRunSystemCheck={() => void runSystemCheck()}
                 onGenerateCaptions={() => void generateCaptions()}
                 onApply={reviseProductionPlan}
+              />
+              <CaptionQaPanel
+                captionsPath={captionsPath}
+                cues={captionDraftCues}
+                sourceCues={captionCues}
+                loading={captionsLoading}
+                error={captionsError}
+                disabled={!canEditPlan || planIsDirty || interactionLocked}
+                dirty={captionDraftDirty}
+                saving={captionRevisionLoading}
+                saveError={captionRevisionError}
+                saveResult={captionRevisionResult}
+                planIsDirty={planIsDirty}
+                onChangeCue={(index, patch) => {
+                  setCaptionRevisionResult(null)
+                  setCaptionRevisionError(null)
+                  setCaptionDraftCues((cues) => cues.map((cue, cueIndex) =>
+                    cueIndex === index ? { ...cue, ...patch } : cue,
+                  ))
+                }}
+                onReset={() => {
+                  setCaptionRevisionError(null)
+                  setCaptionRevisionResult(null)
+                  setCaptionDraftCues(captionCues)
+                }}
+                onSave={() => void saveCaptionRevision()}
               />
               <PreflightPanel
                 preflight={activePreflight}
                 loading={preflightLoading}
                 error={preflightError}
-                dirty={planIsDirty}
+                dirty={planIsDirty || captionDraftDirty}
               />
               <InspectorSection title="Review state">
                 <div className={`rounded-lg border p-3 ${
@@ -1656,6 +1809,23 @@ function InspectorValue({ icon, label, value }: { icon?: React.ReactNode; label:
     <div className="flex items-center justify-between gap-3 text-[11px]">
       <span className="flex items-center gap-1.5 text-zinc-500 [&_svg]:size-3">{icon}{label}</span>
       <span className="max-w-36 truncate font-medium text-zinc-300" title={value}>{value}</span>
+    </div>
+  )
+}
+
+function ReadinessRow({ label, status, detail }: { label: string; status: ReadinessStatus; detail: string }) {
+  const tone = status === "ready"
+    ? "border-emerald-300/15 bg-emerald-300/[0.06] text-emerald-200"
+    : status === "missing"
+      ? "border-red-300/20 bg-red-400/10 text-red-200"
+      : "border-white/10 bg-white/[0.035] text-zinc-300"
+  return (
+    <div className={`rounded-md border p-2 ${tone}`}>
+      <p className="flex items-center justify-between gap-2 text-[9px] font-semibold uppercase tracking-[0.14em]">
+        <span>{label}</span>
+        <span>{status}</span>
+      </p>
+      <p className="mt-1 text-[9px] leading-relaxed text-zinc-500">{detail}</p>
     </div>
   )
 }
@@ -2091,6 +2261,7 @@ function uniqueById<T>(items: T[], getId: (item: T) => string) {
 function ReviewWorkflowPanel({
   activeCandidate,
   planIsDirty,
+  captionDraftDirty,
   hasCurrentPreview,
   batchCandidateCount,
   renderedCandidateCount,
@@ -2101,6 +2272,7 @@ function ReviewWorkflowPanel({
 }: {
   activeCandidate: ReviewCandidate | undefined
   planIsDirty: boolean
+  captionDraftDirty: boolean
   hasCurrentPreview: boolean
   batchCandidateCount: number
   renderedCandidateCount: number
@@ -2116,7 +2288,7 @@ function ReviewWorkflowPanel({
   const packaged = Boolean(latestExportPackage)
   const activeCandidateTitle = activeCandidate?.title ?? "Selected candidate"
   const subtitleProvider = activeCandidate ? getSubtitleProvider(activeCandidate.plan) : null
-  const captionsReady = Boolean(activeCandidate?.plan.timeline.captionsAssetId)
+  const captionsReady = Boolean(activeCandidate?.plan.timeline.captionsAssetId) && !captionDraftDirty
   const captionsNeedAttention = Boolean(subtitleProvider && !captionsReady && subtitleProvider.mode !== "provided-captions")
   const steps = [
     {
@@ -2134,8 +2306,10 @@ function ReviewWorkflowPanel({
     {
       label: "3 Captions",
       done: captionsReady,
-      active: revisionSaved && captionsNeedAttention,
-      detail: captionsReady
+      active: revisionSaved && (captionsNeedAttention || captionDraftDirty),
+      detail: captionDraftDirty
+        ? "Caption text/timing edits must be saved as a new revision."
+        : captionsReady
         ? "Caption asset is attached."
         : subtitleProvider
           ? "Generate captions if this candidate needs subtitles."
@@ -2188,6 +2362,143 @@ function ReviewWorkflowPanel({
         </div>
       ))}
     </div>
+  )
+}
+
+function CaptionQaPanel({
+  captionsPath,
+  cues,
+  sourceCues,
+  loading,
+  error,
+  disabled,
+  dirty,
+  saving,
+  saveError,
+  saveResult,
+  planIsDirty,
+  onChangeCue,
+  onReset,
+  onSave,
+}: {
+  captionsPath: string | null
+  cues: CaptionCue[]
+  sourceCues: CaptionCue[]
+  loading: boolean
+  error: string | null
+  disabled: boolean
+  dirty: boolean
+  saving: boolean
+  saveError: string | null
+  saveResult: CaptionRevisionResult | null
+  planIsDirty: boolean
+  onChangeCue: (index: number, patch: Partial<CaptionCue>) => void
+  onReset: () => void
+  onSave: () => void
+}) {
+  const invalidCue = cues.find((cue) =>
+    !Number.isFinite(cue.start) ||
+    !Number.isFinite(cue.end) ||
+    cue.end <= cue.start ||
+    !cue.text.trim(),
+  )
+  const canSave = Boolean(captionsPath && dirty && !disabled && !saving && !invalidCue)
+
+  return (
+    <InspectorSection title="Caption QA">
+      {!captionsPath ? (
+        <div className="rounded-lg border border-white/10 bg-black/25 p-3 text-[10px] leading-relaxed text-zinc-500">
+          Generate or attach captions first, then use this panel to correct subtitle text and timing before preview/final render.
+        </div>
+      ) : loading ? (
+        <div className="rounded-lg border border-white/10 bg-black/25 p-3 text-[10px] text-zinc-500">
+          Loading caption cues…
+        </div>
+      ) : error ? (
+        <div className="rounded-lg border border-red-400/20 bg-red-400/10 p-3 text-[10px] leading-relaxed text-red-200">
+          {error}
+        </div>
+      ) : (
+        <div className="space-y-2.5">
+          <div className="rounded-lg border border-violet-300/15 bg-violet-400/[0.06] p-3">
+            <p className="text-[10px] font-semibold text-violet-100">{captionsPath.split("/").at(-1)}</p>
+            <p className="mt-1 text-[9px] leading-relaxed text-zinc-500">
+              {sourceCues.length} cue{sourceCues.length === 1 ? "" : "s"} loaded. Saving creates a new candidate revision and clears stale previews.
+            </p>
+          </div>
+          <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+            {cues.map((cue, index) => (
+              <div key={`${cue.start}-${cue.end}-${index}`} className="rounded-lg border border-white/10 bg-black/25 p-2">
+                <div className="mb-2 flex items-center justify-between text-[9px] text-zinc-600">
+                  <span>cue {index + 1}</span>
+                  <span>{formatTimecode(cue.start)} → {formatTimecode(cue.end)}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <NumberEditor
+                    label="Start"
+                    value={cue.start}
+                    min={0}
+                    step={0.05}
+                    disabled={disabled || saving}
+                    onChange={(value) => onChangeCue(index, { start: value })}
+                  />
+                  <NumberEditor
+                    label="End"
+                    value={cue.end}
+                    min={cue.start + 0.01}
+                    step={0.05}
+                    disabled={disabled || saving}
+                    onChange={(value) => onChangeCue(index, { end: value })}
+                  />
+                </div>
+                <textarea
+                  className="mt-2 min-h-16 w-full resize-y rounded-md border border-white/10 bg-black/30 p-2 text-[11px] leading-relaxed text-zinc-200 outline-none placeholder:text-zinc-700 disabled:text-zinc-500"
+                  value={cue.text}
+                  disabled={disabled || saving}
+                  onChange={(event) => onChangeCue(index, { text: event.target.value })}
+                />
+              </div>
+            ))}
+          </div>
+          {planIsDirty ? (
+            <p className="rounded border border-amber-300/20 bg-amber-300/10 p-2 text-[9px] leading-relaxed text-amber-100/80">
+              Save timeline/style changes before saving caption QA edits.
+            </p>
+          ) : invalidCue ? (
+            <p className="rounded border border-red-400/20 bg-red-400/10 p-2 text-[9px] leading-relaxed text-red-200">
+              Each cue needs non-empty text and an end time after the start time.
+            </p>
+          ) : null}
+          {saveError ? (
+            <p className="rounded border border-red-400/20 bg-red-400/10 p-2 text-[9px] leading-relaxed text-red-200">
+              {saveError}
+            </p>
+          ) : null}
+          {saveResult ? (
+            <p className="rounded border border-emerald-300/15 bg-emerald-300/[0.06] p-2 text-[9px] leading-relaxed text-emerald-100/85">
+              Saved {saveResult.cues} cue{saveResult.cues === 1 ? "" : "s"} to {saveResult.captionsPath}. Render a fresh preview before final approval.
+            </p>
+          ) : null}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              className="rounded-md border border-white/10 bg-black/25 px-3 py-2 text-[10px] font-medium text-zinc-400 transition hover:border-white/25 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={!dirty || saving}
+              onClick={onReset}
+            >
+              Reset
+            </button>
+            <button
+              className="inline-flex items-center justify-center gap-2 rounded-md border border-violet-300/25 bg-violet-400/12 px-3 py-2 text-[10px] font-semibold text-violet-100 transition hover:border-violet-200/45 hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={!canSave}
+              onClick={onSave}
+            >
+              {saving ? <LoaderCircle className="size-3 animate-spin" /> : <Save className="size-3" />}
+              {saving ? "Saving…" : "Save caption revision"}
+            </button>
+          </div>
+        </div>
+      )}
+    </InspectorSection>
   )
 }
 
@@ -2278,6 +2589,9 @@ function ProductionInspector({
   captionGenerationLoading,
   captionGenerationError,
   captionGenerationResult,
+  systemCheck,
+  systemCheckLoading,
+  systemCheckError,
   selectedOverlayClipId,
   selectedAudioTrackId,
   selectedAudioClipId,
@@ -2288,6 +2602,7 @@ function ProductionInspector({
   onSelectAudioClip,
   onSelectTransition,
   onSelectTitleCard,
+  onRunSystemCheck,
   onGenerateCaptions,
   onApply,
 }: {
@@ -2297,6 +2612,9 @@ function ProductionInspector({
   captionGenerationLoading: boolean
   captionGenerationError: string | null
   captionGenerationResult: CaptionGenerationResult | null
+  systemCheck: ReviewSystemCheck | null
+  systemCheckLoading: boolean
+  systemCheckError: string | null
   selectedOverlayClipId: string
   selectedAudioTrackId: string
   selectedAudioClipId: string
@@ -2307,6 +2625,7 @@ function ProductionInspector({
   onSelectAudioClip: (value: string) => void
   onSelectTransition: (value: string) => void
   onSelectTitleCard: (value: string) => void
+  onRunSystemCheck: () => void
   onGenerateCaptions: () => void
   onApply: (edit: (current: EditPlan) => EditPlan) => void
 }) {
@@ -2330,6 +2649,7 @@ function ProductionInspector({
     ? "Confirm caption asset"
     : "Generate captions"
   const captionGenerationDisabled = disabled || planIsDirty || captionGenerationLoading
+  const providerReadiness = systemCheck?.subtitleProvider
   const captionStyle = plan.timeline.captionStyle ?? {
     mode: "burn-in" as const,
     preset: "clean" as const,
@@ -2514,6 +2834,38 @@ function ProductionInspector({
           }`}>
             <p className="font-semibold text-zinc-200">{subtitleProviderOption.cost} · {subtitleProviderOption.privacy.replace("-", " ")}</p>
             <p className="mt-1 text-zinc-500">{subtitleProviderOption.description}</p>
+          </div>
+          <div className="rounded-lg border border-white/10 bg-black/25 p-2">
+            <button
+              className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-sky-300/25 bg-sky-400/10 px-3 py-2 text-[10px] font-semibold text-sky-100 transition hover:border-sky-200/45 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={disabled || planIsDirty || systemCheckLoading}
+              onClick={onRunSystemCheck}
+            >
+              {systemCheckLoading ? <LoaderCircle className="size-3 animate-spin" /> : <Gauge className="size-3" />}
+              {systemCheckLoading ? "Checking setup…" : "Check setup"}
+            </button>
+            {planIsDirty ? (
+              <p className="mt-2 text-[9px] leading-relaxed text-amber-200/80">Save this revision before checking provider readiness.</p>
+            ) : null}
+            {systemCheckError ? (
+              <p className="mt-2 rounded border border-red-400/20 bg-red-400/10 p-2 text-[9px] leading-relaxed text-red-200">
+                {systemCheckError}
+              </p>
+            ) : null}
+            {systemCheck ? (
+              <div className="mt-2 space-y-1.5">
+                {[systemCheck.bridge, systemCheck.ffmpeg, systemCheck.ffprobe].map((check) => (
+                  <ReadinessRow key={check.id} label={check.label} status={check.status} detail={check.detail} />
+                ))}
+                {providerReadiness ? (
+                  <ReadinessRow
+                    label={providerReadiness.label}
+                    status={providerReadiness.status}
+                    detail={providerReadiness.requiredEnv ? `${providerReadiness.detail} Required env: ${providerReadiness.requiredEnv}.` : providerReadiness.detail}
+                  />
+                ) : null}
+              </div>
+            ) : null}
           </div>
           <div className="grid grid-cols-2 gap-2">
             <SelectEditor

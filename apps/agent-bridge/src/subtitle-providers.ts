@@ -4,10 +4,11 @@ import { basename, dirname, extname, posix, relative, sep } from "node:path";
 import { alignCaptionWords, captionsToSrt, type CaptionCue, type TimedWord } from "./captions.ts";
 import { runProcess } from "./media.ts";
 import { resolveInputPath, resolveOutputPath } from "./paths.ts";
+import { commandReadiness, envReadiness, type ReadinessStatus } from "./readiness.ts";
 import { parseEditPlan, type EditPlan, type EditPlanV2 } from "./schema.ts";
 
 type SubtitleProvider = NonNullable<EditPlanV2["timeline"]["subtitleProvider"]>;
-type SubtitleProviderMode = SubtitleProvider["mode"];
+export type SubtitleProviderMode = SubtitleProvider["mode"];
 
 type CaptionCandidate = {
   id: string;
@@ -32,7 +33,20 @@ export type CaptionGenerationResult = {
   nextPlan: EditPlanV2;
 };
 
-const providerForPlan = (plan: EditPlanV2): SubtitleProvider => {
+export type SubtitleProviderReadiness = {
+  mode: SubtitleProviderMode;
+  status: ReadinessStatus;
+  label: string;
+  detail: string;
+  requiresExternalUploadApproval: boolean;
+  command?: string;
+  requiredEnv?: string;
+  model?: string;
+  captionsPath?: string;
+  cues?: number;
+};
+
+export const providerForPlan = (plan: EditPlanV2): SubtitleProvider => {
   if (plan.timeline.subtitleProvider) return plan.timeline.subtitleProvider;
   return plan.timeline.captionsAssetId
     ? { mode: "provided-captions", status: "provided", notes: "Using the attached caption asset." }
@@ -148,6 +162,115 @@ const transcriptionText = (value: unknown) => {
   return typeof record.text === "string" ? record.text.trim() : "";
 };
 
+const localWhisperCommand = () =>
+  process.env.OPENCUT_LOCAL_WHISPER_COMMAND ?? process.env.WHISPER_COMMAND ?? "whisper";
+
+const countCaptionCues = (contents: string) =>
+  contents.split(/\r?\n\r?\n/).filter((block) => block.includes("-->")).length;
+
+export const checkSubtitleProviderReadiness = async (
+  root: string,
+  plan: EditPlan,
+): Promise<SubtitleProviderReadiness> => {
+  if (plan.version !== "2") {
+    return {
+      mode: "local-whisper",
+      status: "not-required",
+      label: "Subtitle provider",
+      detail: "v1 edit plans do not carry provider metadata.",
+      requiresExternalUploadApproval: false,
+    };
+  }
+
+  const provider = providerForPlan(plan);
+  if (provider.mode === "local-whisper") {
+    const command = localWhisperCommand();
+    const readiness = await commandReadiness("subtitle-provider", "Local Whisper", command, ["--help"]);
+    return {
+      mode: provider.mode,
+      status: readiness.status,
+      label: "Local Whisper",
+      detail: readiness.status === "ready"
+        ? `Local Whisper command is available (${command}).`
+        : `${readiness.detail} Set OPENCUT_LOCAL_WHISPER_COMMAND to the local Whisper executable if needed.`,
+      command,
+      model: provider.model ?? "whisper-local",
+      requiresExternalUploadApproval: false,
+    };
+  }
+
+  if (provider.mode === "openai-api") {
+    const readiness = envReadiness("subtitle-provider", "OpenAI transcription API", "OPENAI_API_KEY");
+    return {
+      mode: provider.mode,
+      status: readiness.status,
+      label: readiness.label,
+      detail: readiness.detail,
+      requiredEnv: readiness.requiredEnv,
+      model: provider.model ?? "whisper-1",
+      requiresExternalUploadApproval: true,
+    };
+  }
+
+  if (provider.mode === "openrouter") {
+    const readiness = envReadiness("subtitle-provider", "OpenRouter transcription API", "OPENROUTER_API_KEY");
+    return {
+      mode: provider.mode,
+      status: readiness.status,
+      label: readiness.label,
+      detail: readiness.detail,
+      requiredEnv: readiness.requiredEnv,
+      model: provider.model ?? "openai/whisper-large-v3",
+      requiresExternalUploadApproval: true,
+    };
+  }
+
+  const captionsAsset = plan.assets.find((asset) => asset.id === plan.timeline.captionsAssetId && asset.kind === "captions");
+  if (!captionsAsset) {
+    return {
+      mode: provider.mode,
+      status: "missing",
+      label: "Attached captions",
+      detail: "The provided-captions provider needs an attached captions asset.",
+      requiresExternalUploadApproval: false,
+    };
+  }
+  if (!/\.(srt|vtt)$/i.test(captionsAsset.path)) {
+    return {
+      mode: provider.mode,
+      status: "missing",
+      label: "Attached captions",
+      detail: `Caption asset ${captionsAsset.path} must be .srt or .vtt.`,
+      captionsPath: captionsAsset.path,
+      requiresExternalUploadApproval: false,
+    };
+  }
+  try {
+    const contents = await readFile(await resolveInputPath(root, captionsAsset.path), "utf8");
+    const cues = countCaptionCues(contents);
+    return {
+      mode: provider.mode,
+      status: cues > 0 ? "ready" : "missing",
+      label: "Attached captions",
+      detail: cues > 0
+        ? `Attached caption asset is readable with ${cues} cue${cues === 1 ? "" : "s"}.`
+        : "Attached caption asset is readable but does not contain cue timing.",
+      captionsPath: captionsAsset.path,
+      cues,
+      requiresExternalUploadApproval: false,
+    };
+  } catch (error) {
+    return {
+      mode: provider.mode,
+      status: "missing",
+      label: "Attached captions",
+      detail: error instanceof Error ? error.message : "Attached caption asset could not be read.",
+      captionsPath: captionsAsset.path,
+      requiresExternalUploadApproval: false,
+    };
+  }
+};
+
 const approximateCuesFromText = (text: string, durationSeconds: number): CaptionCue[] => {
   const words = text.replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
   if (words.length === 0) return [];
@@ -185,7 +308,7 @@ const transcribeWithLocalWhisper = async (
   audioPath: string,
   provider: SubtitleProvider,
 ) => {
-  const command = process.env.OPENCUT_LOCAL_WHISPER_COMMAND ?? process.env.WHISPER_COMMAND ?? "whisper";
+  const command = localWhisperCommand();
   const outputDirectory = dirname(audioPath);
   const args = [audioPath, "--output_format", "json", "--output_dir", outputDirectory];
   if (provider.language) args.push("--language", provider.language);
