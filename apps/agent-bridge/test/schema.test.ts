@@ -116,6 +116,49 @@ describe("editPlanSchema", () => {
     })).toThrow("project canvas");
   });
 
+  test("validates title-card visual layout inside the project canvas", () => {
+    const plan = parseEditPlan({
+      ...validPlan,
+      version: "2",
+      timeline: {
+        ...validPlan.timeline,
+        titleCards: [{
+          id: "lower-third",
+          template: "lower-third",
+          timelineStart: 0,
+          duration: 2,
+          title: "Guest Name",
+          x: 48,
+          y: 1_500,
+          width: 920,
+          height: 240,
+          opacity: 0.8,
+          fontScale: 1.2,
+        }],
+      },
+    });
+    expect(plan.version).toBe("2");
+    if (plan.version !== "2") throw new Error("Expected v2 plan");
+    expect(plan.timeline.titleCards[0]).toMatchObject({ x: 48, y: 1_500, width: 920, height: 240, opacity: 0.8, fontScale: 1.2 });
+
+    expect(() => parseEditPlan({
+      ...validPlan,
+      version: "2",
+      timeline: {
+        ...validPlan.timeline,
+        titleCards: [{
+          id: "bad-title",
+          timelineStart: 0,
+          duration: 2,
+          title: "Bad",
+          x: 900,
+          width: 400,
+          height: 200,
+        }],
+      },
+    })).toThrow("Title card bad-title layout must fit inside the project canvas");
+  });
+
   test("validates production styling, transitions, and smart ducking", () => {
     const plan = parseEditPlan({
       ...validPlan,

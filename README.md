@@ -101,15 +101,16 @@ In the review workspace you can:
 11. Add several preview-approved candidates to an explicit batch queue for sequential final rendering.
 12. Reload without losing selection, revisions, preview state, batch state, notes, audit history, or final state.
 13. Edit v2 overlays, audio tracks, transitions, title cards, styled captions, ducking, and all layered media assets before previewing the compiled result.
+14. Drag and resize existing overlay/title boxes directly on the preview monitor, nudge them with the keyboard, and reposition burned-in captions by dragging their preview box.
 
 This is intentionally a review boundary, not a claim that the rewrite already
 has a complete editor. The current revision adapter remains FFmpeg-backed and
 will move behind the native Editor API when that API lands.
 
-Current product gaps are tracked explicitly: visual overlays and title cards
-still use inspector fields rather than a full drag-resize WYSIWYG canvas, and
-caption generation provider selection is still an agent workflow choice rather
-than a first-class UI selector.
+Current product gaps are tracked explicitly: the WYSIWYG surface edits existing
+agent-authored visual layers rather than creating new tracks or arbitrary
+keyframed effects, and caption generation provider selection is still an agent
+workflow choice rather than a first-class UI selector.
 
 ## Contributing
 

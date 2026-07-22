@@ -44,6 +44,8 @@ export const capabilities = {
     titleCards: true,
     batchRendering: true,
     productionLayerEditing: true,
+    wysiwygVisualControls: true,
+    titleCardLayout: true,
     preflightChecks: true,
     exportPackages: true,
     publishing: false,

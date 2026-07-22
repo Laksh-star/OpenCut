@@ -69,32 +69,58 @@ const wrapText = (value: string, maximumCharacters: number) => {
   return lines.slice(0, 2);
 };
 
+const titleCardLayout = (plan: EditPlanV2, card: EditPlanV2["timeline"]["titleCards"][number]) => {
+  const { width, height } = plan.project;
+  const defaultLayout = card.template === "lower-third"
+    ? {
+        x: Math.round(width * 0.06),
+        y: Math.round(height * 0.68),
+        width: Math.round(width * 0.78),
+        height: Math.round(height * 0.22),
+      }
+    : {
+        x: Math.round(width * 0.12),
+        y: Math.round(height * 0.35),
+        width: Math.round(width * 0.76),
+        height: Math.round(height * 0.28),
+      };
+  const boxWidth = card.width ?? defaultLayout.width;
+  const boxHeight = card.height ?? defaultLayout.height;
+  return {
+    x: card.x ?? defaultLayout.x,
+    y: card.y ?? defaultLayout.y,
+    width: boxWidth,
+    height: boxHeight,
+    opacity: card.opacity ?? 1,
+    fontScale: card.fontScale ?? 1,
+  };
+};
+
 const titleCardSvg = (plan: EditPlanV2, card: EditPlanV2["timeline"]["titleCards"][number]) => {
   const { width, height } = plan.project;
-  const titleSize = Math.round(Math.max(36, Math.min(96, width * 0.055)));
+  const layout = titleCardLayout(plan, card);
+  const titleSize = Math.round(Math.max(28, Math.min(120, width * 0.055 * layout.fontScale)));
   const subtitleSize = Math.round(titleSize * 0.42);
   const accentHeight = Math.max(6, Math.round(height * 0.012));
   const title = escapeXml(card.title);
   const subtitle = card.subtitle ? escapeXml(card.subtitle) : undefined;
 
   if (card.template === "lower-third") {
-    const boxX = Math.round(width * 0.06);
-    const boxY = Math.round(height * 0.68);
-    const boxWidth = Math.round(width * 0.78);
-    const boxHeight = Math.round(height * 0.22);
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
-      <rect x="${boxX}" y="${boxY}" width="${boxWidth}" height="${boxHeight}" rx="18" fill="${card.background}" fill-opacity="0.9"/>
-      <rect x="${boxX}" y="${boxY}" width="${accentHeight}" height="${boxHeight}" rx="3" fill="${card.accentColor}"/>
-      <text x="${boxX + Math.round(width * 0.035)}" y="${boxY + Math.round(boxHeight * 0.48)}" fill="${card.textColor}" font-family="Arial, Helvetica, sans-serif" font-size="${Math.round(titleSize * 0.7)}" font-weight="700">${title}</text>
-      ${subtitle ? `<text x="${boxX + Math.round(width * 0.035)}" y="${boxY + Math.round(boxHeight * 0.75)}" fill="${card.textColor}" fill-opacity="0.78" font-family="Arial, Helvetica, sans-serif" font-size="${subtitleSize}">${subtitle}</text>` : ""}
+      <rect x="${layout.x}" y="${layout.y}" width="${layout.width}" height="${layout.height}" rx="18" fill="${card.background}" fill-opacity="${0.9 * layout.opacity}"/>
+      <rect x="${layout.x}" y="${layout.y}" width="${accentHeight}" height="${layout.height}" rx="3" fill="${card.accentColor}" fill-opacity="${layout.opacity}"/>
+      <text x="${layout.x + Math.round(layout.width * 0.055)}" y="${layout.y + Math.round(layout.height * 0.48)}" fill="${card.textColor}" fill-opacity="${layout.opacity}" font-family="Arial, Helvetica, sans-serif" font-size="${Math.round(titleSize * 0.7)}" font-weight="700">${title}</text>
+      ${subtitle ? `<text x="${layout.x + Math.round(layout.width * 0.055)}" y="${layout.y + Math.round(layout.height * 0.75)}" fill="${card.textColor}" fill-opacity="${0.78 * layout.opacity}" font-family="Arial, Helvetica, sans-serif" font-size="${subtitleSize}">${subtitle}</text>` : ""}
     </svg>`;
   }
 
+  const textX = layout.x + Math.round(layout.width / 2);
+  const titleBaseline = layout.y + Math.round(layout.height * 0.55);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
-    <rect width="100%" height="100%" fill="${card.background}"/>
-    <rect x="${Math.round(width * 0.38)}" y="${Math.round(height * 0.35)}" width="${Math.round(width * 0.24)}" height="${accentHeight}" rx="${Math.round(accentHeight / 2)}" fill="${card.accentColor}"/>
-    <text x="50%" y="${Math.round(height * 0.5)}" text-anchor="middle" fill="${card.textColor}" font-family="Arial, Helvetica, sans-serif" font-size="${titleSize}" font-weight="700">${title}</text>
-    ${subtitle ? `<text x="50%" y="${Math.round(height * 0.59)}" text-anchor="middle" fill="${card.textColor}" fill-opacity="0.8" font-family="Arial, Helvetica, sans-serif" font-size="${subtitleSize}">${subtitle}</text>` : ""}
+    <rect width="100%" height="100%" fill="${card.background}" fill-opacity="${layout.opacity}"/>
+    <rect x="${layout.x + Math.round(layout.width * 0.34)}" y="${layout.y}" width="${Math.round(layout.width * 0.32)}" height="${accentHeight}" rx="${Math.round(accentHeight / 2)}" fill="${card.accentColor}" fill-opacity="${layout.opacity}"/>
+    <text x="${textX}" y="${titleBaseline}" text-anchor="middle" fill="${card.textColor}" fill-opacity="${layout.opacity}" font-family="Arial, Helvetica, sans-serif" font-size="${titleSize}" font-weight="700">${title}</text>
+    ${subtitle ? `<text x="${textX}" y="${titleBaseline + Math.round(titleSize * 0.85)}" text-anchor="middle" fill="${card.textColor}" fill-opacity="${0.8 * layout.opacity}" font-family="Arial, Helvetica, sans-serif" font-size="${subtitleSize}">${subtitle}</text>` : ""}
   </svg>`;
 };
 

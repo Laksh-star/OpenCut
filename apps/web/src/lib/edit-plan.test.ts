@@ -4,6 +4,7 @@ import {
   applyProductionPreset,
   buildTimelineSegments,
   formatTimecode,
+  getTitleCardCanvasBox,
   getPlanTrackCounts,
   getTimelineDuration,
   parseEditPlan,
@@ -15,8 +16,10 @@ import {
   updateCaptionStyle,
   updateDucking,
   updateOverlayClip,
+  updateOverlayClipCanvasBox,
   updatePlanClip,
   updateTitleCard,
+  updateTitleCardCanvasBox,
   updateTransition,
 } from "./edit-plan.ts"
 
@@ -124,6 +127,58 @@ describe("edit plan review model", () => {
     expect(revised.timeline.titleCards[0]).toMatchObject({ title: "New title", accentColor: "#00ff00" })
     expect(revised.timeline.captionStyle).toMatchObject({ preset: "bold", fontSize: 48 })
     expect(revised.timeline.audioMix?.ducking).toMatchObject({ ratio: 6, releaseMs: 300, targetTrackIds: ["music"] })
+  })
+
+  test("keeps WYSIWYG overlay and title boxes inside the project canvas", () => {
+    const layered = parseEditPlan({
+      ...sampleEditPlan,
+      version: "2",
+      assets: [
+        ...sampleEditPlan.assets,
+        { id: "overlay", path: "media/overlay.mp4", kind: "video" },
+      ],
+      timeline: {
+        ...sampleEditPlan.timeline,
+        overlayTracks: [{ id: "b-roll", clips: [{ id: "b-roll-1", assetId: "overlay", timelineStart: 3, sourceStart: 0, sourceEnd: 2, width: 640, height: 360 }] }],
+        audioTracks: [],
+        transitions: [],
+        titleCards: [{ id: "lower", template: "lower-third", timelineStart: 0, duration: 2, title: "Opening" }],
+      },
+    })
+
+    let revised = updateOverlayClipCanvasBox(layered, "b-roll-1", {
+      x: 2_000,
+      y: 2_000,
+      width: 2_000,
+      height: 2_000,
+      opacity: 1.4,
+    })
+    revised = updateTitleCardCanvasBox(revised, "lower", {
+      x: -40,
+      y: 800,
+      width: 900,
+      height: 260,
+      opacity: -1,
+      fontScale: 3,
+    })
+
+    expect(revised.version).toBe("2")
+    if (revised.version !== "2") throw new Error("Expected v2 plan")
+    expect(revised.timeline.overlayTracks[0]?.clips[0]).toMatchObject({
+      x: 0,
+      y: 0,
+      width: 1280,
+      height: 720,
+      opacity: 1,
+    })
+    expect(getTitleCardCanvasBox(revised, revised.timeline.titleCards[0]!)).toMatchObject({
+      x: 0,
+      y: 460,
+      width: 900,
+      height: 260,
+      opacity: 0,
+      fontScale: 2,
+    })
   })
 
   test("applies production presets across captions, titles, transitions, and ducking", () => {

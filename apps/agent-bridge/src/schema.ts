@@ -206,6 +206,12 @@ const titleCardSchema = z.object({
   background: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#111827"),
   textColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#FFFFFF"),
   accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#FBBF24"),
+  x: z.number().int().min(0).optional(),
+  y: z.number().int().min(0).optional(),
+  width: z.number().int().min(1).optional(),
+  height: z.number().int().min(1).optional(),
+  opacity: z.number().min(0).max(1).default(1),
+  fontScale: z.number().min(0.5).max(2).default(1),
 });
 
 const captionStyleSchema = z.object({
@@ -347,6 +353,17 @@ export const editPlanV2Schema = z
     for (const [index, title] of plan.timeline.titleCards.entries()) {
       if (clipIds.has(title.id) || titleIds.has(title.id)) {
         context.addIssue({ code: "custom", message: `Duplicate timeline id: ${title.id}`, path: ["timeline", "titleCards", index, "id"] });
+      }
+      const titleX = title.x ?? 0;
+      const titleY = title.y ?? 0;
+      const titleWidth = title.width ?? plan.project.width;
+      const titleHeight = title.height ?? plan.project.height;
+      if (titleX + titleWidth > plan.project.width || titleY + titleHeight > plan.project.height) {
+        context.addIssue({
+          code: "custom",
+          message: `Title card ${title.id} layout must fit inside the project canvas`,
+          path: ["timeline", "titleCards", index],
+        });
       }
       titleIds.add(title.id);
     }

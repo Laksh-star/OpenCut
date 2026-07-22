@@ -13,6 +13,16 @@ export type TitleCard = EditPlanV2["timeline"]["titleCards"][number]
 export type CaptionStyle = NonNullable<EditPlanV2["timeline"]["captionStyle"]>
 export type DuckingSettings = NonNullable<NonNullable<EditPlanV2["timeline"]["audioMix"]>["ducking"]>
 export type ProductionPresetId = "clean-interview" | "bold-social" | "minimal-archive"
+export type CanvasBox = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+export type TitleCardCanvasBox = CanvasBox & {
+  opacity: number
+  fontScale: number
+}
 
 export type TimelineSegment = {
   clip: EditPlan["timeline"]["clips"][number]
@@ -154,6 +164,44 @@ export function updateOverlayClip(
   })
 }
 
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, value))
+
+const constrainCanvasBox = (
+  box: CanvasBox,
+  canvas: { width: number; height: number },
+  minimumSize = 24,
+): CanvasBox => {
+  const width = Math.round(clamp(box.width, minimumSize, canvas.width))
+  const height = Math.round(clamp(box.height, minimumSize, canvas.height))
+  return {
+    x: Math.round(clamp(box.x, 0, canvas.width - width)),
+    y: Math.round(clamp(box.y, 0, canvas.height - height)),
+    width,
+    height,
+  }
+}
+
+export function updateOverlayClipCanvasBox(
+  plan: EditPlan,
+  clipId: string,
+  patch: Partial<CanvasBox & Pick<OverlayClip, "opacity">>,
+): EditPlan {
+  if (plan.version !== "2") return plan
+  const clip = plan.timeline.overlayTracks.flatMap((track) => track.clips).find((entry) => entry.id === clipId)
+  if (!clip) return plan
+  const box = constrainCanvasBox({
+    x: patch.x ?? clip.x,
+    y: patch.y ?? clip.y,
+    width: patch.width ?? clip.width,
+    height: patch.height ?? clip.height,
+  }, plan.project)
+  return updateOverlayClip(plan, clipId, {
+    ...box,
+    opacity: patch.opacity === undefined ? clip.opacity : clamp(patch.opacity, 0, 1),
+  })
+}
+
 export function updateAudioTrack(
   plan: EditPlan,
   trackId: string,
@@ -223,6 +271,59 @@ export function updateTitleCard(
         title.id === titleId ? { ...title, ...patch } : title,
       ),
     },
+  })
+}
+
+export function getTitleCardCanvasBox(
+  plan: EditPlan,
+  title: TitleCard,
+): TitleCardCanvasBox {
+  const project = plan.project
+  const defaultBox = title.template === "lower-third"
+    ? {
+        x: Math.round(project.width * 0.06),
+        y: Math.round(project.height * 0.68),
+        width: Math.round(project.width * 0.78),
+        height: Math.round(project.height * 0.22),
+      }
+    : {
+        x: Math.round(project.width * 0.12),
+        y: Math.round(project.height * 0.35),
+        width: Math.round(project.width * 0.76),
+        height: Math.round(project.height * 0.28),
+      }
+  const box = constrainCanvasBox({
+    x: title.x ?? defaultBox.x,
+    y: title.y ?? defaultBox.y,
+    width: title.width ?? defaultBox.width,
+    height: title.height ?? defaultBox.height,
+  }, project, 48)
+  return {
+    ...box,
+    opacity: title.opacity ?? 1,
+    fontScale: title.fontScale ?? 1,
+  }
+}
+
+export function updateTitleCardCanvasBox(
+  plan: EditPlan,
+  titleId: string,
+  patch: Partial<TitleCardCanvasBox>,
+): EditPlan {
+  if (plan.version !== "2") return plan
+  const title = plan.timeline.titleCards.find((entry) => entry.id === titleId)
+  if (!title) return plan
+  const current = getTitleCardCanvasBox(plan, title)
+  const box = constrainCanvasBox({
+    x: patch.x ?? current.x,
+    y: patch.y ?? current.y,
+    width: patch.width ?? current.width,
+    height: patch.height ?? current.height,
+  }, plan.project, 48)
+  return updateTitleCard(plan, titleId, {
+    ...box,
+    opacity: patch.opacity === undefined ? current.opacity : clamp(patch.opacity, 0, 1),
+    fontScale: patch.fontScale === undefined ? current.fontScale : clamp(patch.fontScale, 0.5, 2),
   })
 }
 

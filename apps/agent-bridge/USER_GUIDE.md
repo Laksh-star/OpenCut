@@ -52,13 +52,22 @@ agent to create a fresh session with three distinct source moments.
 
 ## Current visual controls
 
-Version-2 plans can already edit existing overlay, audio, transition, title-card,
+Version-2 plans can edit existing overlay, audio, transition, title-card,
 caption-style, and ducking fields through inspector controls.
 
-The current UI is not yet full WYSIWYG for titles, logos, and overlays. Manual
-numeric controls are available for size, position, timing, colors, opacity, and
-fit. A future pass should add a drag-resize visual canvas so the preview monitor
-matches the final layout controls more directly.
+The preview monitor also has a WYSIWYG visual layer surface:
+
+- drag existing overlay/title boxes to change position;
+- drag the bottom-right handle to resize overlay/title boxes;
+- use arrow keys for one-pixel nudges, or Shift+arrow for ten-pixel nudges;
+- drag the burned-in caption preview vertically to choose top, middle, or bottom
+  safe placement;
+- use the inspector for exact numbers, colors, opacity, font scale, timing, and
+  fit.
+
+The WYSIWYG surface edits existing agent-authored layers. It does not yet create
+new overlay/title tracks, add masks, animate keyframes, or replace the required
+rendered preview as the final approval artifact.
 
 ## Current subtitle workflow
 

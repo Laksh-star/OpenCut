@@ -35,6 +35,7 @@ import {
   buildTimelineSegments,
   applyProductionPreset,
   formatTimecode,
+  getTitleCardCanvasBox,
   getPlanTrackCounts,
   getTimelineDuration,
   movePlanClip,
@@ -47,11 +48,16 @@ import {
   updateCaptionStyle,
   updateDucking,
   updateOverlayClip,
+  updateOverlayClipCanvasBox,
   updatePlanClip,
   updateTitleCard,
+  updateTitleCardCanvasBox,
   updateTransition,
+  type CaptionStyle,
   type EditPlan,
+  type OverlayClip,
   type ProductionPresetId,
+  type TitleCard,
   type TimelineSegment,
 } from "#/lib/edit-plan.ts"
 import {
@@ -1170,22 +1176,19 @@ function AgentReviewWorkspace() {
                 </div>
               )}
 
-              {videoUrl && activeCaption ? (
-                <div className="pointer-events-none absolute inset-x-4 bottom-16 flex justify-center">
-                  <p className="max-w-[85%] whitespace-pre-line rounded-lg bg-black/80 px-4 py-2 text-center text-base font-semibold leading-snug text-white shadow-lg md:text-xl">
-                    {activeCaption.text}
-                  </p>
-                </div>
-              ) : null}
-
-              {videoUrl && selectedSegment ? (
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent px-4 pb-4 pt-12">
-                  <p className="text-xs font-medium">{humanizeId(selectedSegment.clip.id)}</p>
-                  <p className="mt-1 text-[10px] text-zinc-400">
-                    Source {formatTimecode(selectedSegment.clip.sourceStart)}–{formatTimecode(selectedSegment.clip.sourceEnd)}
-                  </p>
-                </div>
-              ) : null}
+              <VisualDesignCanvas
+                plan={plan}
+                currentTimelineTime={currentTimelineTime}
+                activeCaption={activeCaption}
+                captionsEnabled={captionsEnabled}
+                selectedSegment={selectedSegment}
+                selectedOverlayClipId={selectedOverlayClipId}
+                selectedTitleCardId={selectedTitleCardId}
+                disabled={!canEditPlan}
+                onSelectOverlayClip={setSelectedOverlayClipId}
+                onSelectTitleCard={setSelectedTitleCardId}
+                onApply={reviseProductionPlan}
+              />
             </div>
           </div>
 
@@ -1592,6 +1595,434 @@ function InspectorValue({ icon, label, value }: { icon?: React.ReactNode; label:
   )
 }
 
+type CanvasBox = { x: number; y: number; width: number; height: number }
+
+function VisualDesignCanvas({
+  plan,
+  currentTimelineTime,
+  activeCaption,
+  captionsEnabled,
+  selectedSegment,
+  selectedOverlayClipId,
+  selectedTitleCardId,
+  disabled,
+  onSelectOverlayClip,
+  onSelectTitleCard,
+  onApply,
+}: {
+  plan: EditPlan
+  currentTimelineTime: number
+  activeCaption: CaptionCue | undefined
+  captionsEnabled: boolean
+  selectedSegment: TimelineSegment | undefined
+  selectedOverlayClipId: string
+  selectedTitleCardId: string
+  disabled: boolean
+  onSelectOverlayClip: (value: string) => void
+  onSelectTitleCard: (value: string) => void
+  onApply: (edit: (current: EditPlan) => EditPlan) => void
+}) {
+  const canvas = { x: 0, y: 0, width: plan.project.width, height: plan.project.height }
+  const overlayEntries = plan.version === "2"
+    ? plan.timeline.overlayTracks.flatMap((track) => track.clips.map((clip) => ({ track, clip })))
+    : []
+  const activeOverlayEntries = overlayEntries.filter(({ clip }) =>
+    isTimelineVisible(currentTimelineTime, clip.timelineStart, (clip.sourceEnd - clip.sourceStart) / clip.speed),
+  )
+  const selectedOverlayEntry = overlayEntries.find(({ clip }) => clip.id === selectedOverlayClipId)
+  const displayOverlayEntries = uniqueById([
+    ...activeOverlayEntries,
+    ...(selectedOverlayEntry ? [selectedOverlayEntry] : []),
+  ], (entry) => entry.clip.id)
+  const titleCards = plan.version === "2" ? plan.timeline.titleCards : []
+  const activeTitleCards = titleCards.filter((card) =>
+    isTimelineVisible(currentTimelineTime, card.timelineStart, card.duration),
+  )
+  const selectedTitleCard = titleCards.find((card) => card.id === selectedTitleCardId)
+  const displayTitleCards = uniqueById([
+    ...activeTitleCards,
+    ...(selectedTitleCard ? [selectedTitleCard] : []),
+  ], (card) => card.id)
+  const captionStyle = plan.version === "2" ? plan.timeline.captionStyle : undefined
+  const showCaption = Boolean(activeCaption && captionsEnabled)
+  const canEditCaption = plan.version === "2" && Boolean(plan.timeline.captionsAssetId) && !disabled
+
+  return (
+    <div className="absolute inset-0">
+      {plan.version === "2" ? (
+        <div className="pointer-events-none absolute left-3 top-3 z-30 rounded-full border border-white/10 bg-black/60 px-2.5 py-1 text-[9px] font-medium text-zinc-300 shadow-lg">
+          WYSIWYG layer edit · drag boxes, resize corners
+        </div>
+      ) : null}
+
+      {displayTitleCards.map((card) => {
+        const box = getTitleCardCanvasBox(plan, card)
+        const active = isTimelineVisible(currentTimelineTime, card.timelineStart, card.duration)
+        return (
+          <TitleCardCanvasControl
+            key={card.id}
+            card={card}
+            box={box}
+            canvas={canvas}
+            selected={card.id === selectedTitleCardId}
+            inactive={!active}
+            disabled={disabled}
+            onSelect={() => onSelectTitleCard(card.id)}
+            onChange={(nextBox) => onApply((current) => updateTitleCardCanvasBox(current, card.id, nextBox))}
+          />
+        )
+      })}
+
+      {displayOverlayEntries.map(({ track, clip }) => {
+        const active = isTimelineVisible(currentTimelineTime, clip.timelineStart, (clip.sourceEnd - clip.sourceStart) / clip.speed)
+        return (
+          <OverlayCanvasControl
+            key={clip.id}
+            clip={clip}
+            trackId={track.id}
+            canvas={canvas}
+            selected={clip.id === selectedOverlayClipId}
+            inactive={!active}
+            disabled={disabled}
+            onSelect={() => onSelectOverlayClip(clip.id)}
+            onChange={(nextBox) => onApply((current) => updateOverlayClipCanvasBox(current, clip.id, nextBox))}
+          />
+        )
+      })}
+
+      {showCaption && activeCaption ? (
+        <CaptionCanvasControl
+          text={activeCaption.text}
+          style={captionStyle}
+          canvas={canvas}
+          disabled={!canEditCaption}
+          onChange={(patch) => onApply((current) => updateCaptionStyle(current, patch))}
+        />
+      ) : null}
+
+      {selectedSegment ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 to-transparent px-4 pb-4 pt-12">
+          <p className="text-xs font-medium">{humanizeId(selectedSegment.clip.id)}</p>
+          <p className="mt-1 text-[10px] text-zinc-400">
+            Source {formatTimecode(selectedSegment.clip.sourceStart)}–{formatTimecode(selectedSegment.clip.sourceEnd)}
+          </p>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function OverlayCanvasControl({
+  clip,
+  trackId,
+  canvas,
+  selected,
+  inactive,
+  disabled,
+  onSelect,
+  onChange,
+}: {
+  clip: OverlayClip
+  trackId: string
+  canvas: CanvasBox
+  selected: boolean
+  inactive: boolean
+  disabled: boolean
+  onSelect: () => void
+  onChange: (box: Partial<CanvasBox & Pick<OverlayClip, "opacity">>) => void
+}) {
+  return (
+    <CanvasBoxControl
+      box={clip}
+      canvas={canvas}
+      selected={selected}
+      inactive={inactive}
+      disabled={disabled}
+      label={`${clip.id} · ${trackId}`}
+      tone="cyan"
+      onSelect={onSelect}
+      onChange={onChange}
+    >
+      <div className="flex h-full flex-col justify-between rounded-md bg-cyan-300/[0.09] p-2 text-cyan-50">
+        <span className="truncate text-[10px] font-semibold">{humanizeId(clip.id)}</span>
+        <span className="text-[9px] text-cyan-100/70">{Math.round(clip.width)}×{Math.round(clip.height)} · {Math.round(clip.opacity * 100)}%</span>
+      </div>
+    </CanvasBoxControl>
+  )
+}
+
+function TitleCardCanvasControl({
+  card,
+  box,
+  canvas,
+  selected,
+  inactive,
+  disabled,
+  onSelect,
+  onChange,
+}: {
+  card: TitleCard
+  box: CanvasBox & { opacity: number; fontScale: number }
+  canvas: CanvasBox
+  selected: boolean
+  inactive: boolean
+  disabled: boolean
+  onSelect: () => void
+  onChange: (box: Partial<CanvasBox>) => void
+}) {
+  return (
+    <>
+      {card.template !== "lower-third" ? (
+        <div
+          className="pointer-events-none absolute inset-0 z-10"
+          style={{ backgroundColor: card.background, opacity: inactive ? Math.min(0.28, box.opacity * 0.35) : box.opacity * 0.78 }}
+        />
+      ) : null}
+      <CanvasBoxControl
+        box={box}
+        canvas={canvas}
+        selected={selected}
+        inactive={inactive}
+        disabled={disabled}
+        label={`${card.id} · ${card.template}`}
+        tone="amber"
+        onSelect={onSelect}
+        onChange={onChange}
+      >
+        <div
+          className="flex h-full flex-col justify-center rounded-md px-3 py-2 shadow-lg"
+          style={{ backgroundColor: card.background, color: card.textColor, opacity: inactive ? Math.min(0.7, box.opacity) : box.opacity }}
+        >
+          <span
+            className="truncate font-bold leading-tight"
+            style={{ fontSize: `clamp(10px, ${box.fontScale * 1.1}vw, 28px)` }}
+          >
+            {card.title}
+          </span>
+          {card.subtitle ? (
+            <span className="mt-1 truncate text-[10px] opacity-75">{card.subtitle}</span>
+          ) : null}
+          <span className="mt-1 h-1 w-1/3 rounded-full" style={{ backgroundColor: card.accentColor }} />
+        </div>
+      </CanvasBoxControl>
+    </>
+  )
+}
+
+function CaptionCanvasControl({
+  text,
+  style,
+  canvas,
+  disabled,
+  onChange,
+}: {
+  text: string
+  style: CaptionStyle | undefined
+  canvas: CanvasBox
+  disabled: boolean
+  onChange: (patch: Partial<CaptionStyle>) => void
+}) {
+  const captionStyle = style ?? {
+    mode: "burn-in" as const,
+    preset: "clean" as const,
+    fontSize: 42,
+    textColor: "#FFFFFF",
+    outlineColor: "#000000",
+    backgroundColor: "#000000",
+    backgroundOpacity: 0.72,
+    marginV: 56,
+    alignment: "bottom" as const,
+  }
+  const fontSize = captionStyle.fontSize ?? 42
+  const boxWidth = Math.round(canvas.width * 0.78)
+  const boxHeight = Math.round(Math.min(canvas.height * 0.2, Math.max(72, fontSize * 2.5)))
+  const boxX = Math.round((canvas.width - boxWidth) / 2)
+  const boxY = captionStyle.alignment === "top"
+    ? captionStyle.marginV
+    : captionStyle.alignment === "middle"
+      ? Math.round((canvas.height - boxHeight) / 2)
+      : canvas.height - captionStyle.marginV - boxHeight
+  const box = { x: boxX, y: boxY, width: boxWidth, height: boxHeight }
+
+  return (
+    <CanvasBoxControl
+      box={box}
+      canvas={canvas}
+      selected={false}
+      inactive={false}
+      disabled={disabled}
+      label="Caption position"
+      tone="violet"
+      resize={false}
+      onSelect={() => undefined}
+      onChange={(nextBox) => {
+        const nextY = nextBox.y ?? box.y
+        const midpoint = nextY + box.height / 2
+        if (midpoint < canvas.height / 3) {
+          onChange({ alignment: "top", marginV: Math.round(Math.max(12, nextY)) })
+        } else if (midpoint > canvas.height * 2 / 3) {
+          onChange({ alignment: "bottom", marginV: Math.round(Math.max(12, canvas.height - nextY - box.height)) })
+        } else {
+          onChange({ alignment: "middle" })
+        }
+      }}
+    >
+      <div
+        className="flex h-full items-center justify-center rounded-lg px-4 py-2 text-center font-bold leading-tight shadow-lg"
+        style={{
+          color: captionStyle.textColor,
+          backgroundColor: captionStyle.backgroundColor,
+          opacity: captionStyle.preset === "minimal" ? 0.92 : Math.max(0.2, captionStyle.backgroundOpacity),
+          textShadow: `0 0 2px ${captionStyle.outlineColor}, 0 1px 4px ${captionStyle.outlineColor}`,
+          fontSize: `clamp(11px, ${(fontSize / canvas.height) * 80}vw, 24px)`,
+        }}
+      >
+        {text}
+      </div>
+    </CanvasBoxControl>
+  )
+}
+
+function CanvasBoxControl({
+  box,
+  canvas,
+  selected,
+  inactive,
+  disabled,
+  label,
+  tone,
+  resize = true,
+  children,
+  onSelect,
+  onChange,
+}: {
+  box: CanvasBox
+  canvas: CanvasBox
+  selected: boolean
+  inactive: boolean
+  disabled: boolean
+  label: string
+  tone: "amber" | "cyan" | "violet"
+  resize?: boolean
+  children: React.ReactNode
+  onSelect: () => void
+  onChange: (box: Partial<CanvasBox>) => void
+}) {
+  const dragState = useRef<{
+    mode: "move" | "resize"
+    pointerId: number
+    startX: number
+    startY: number
+    box: CanvasBox
+  } | null>(null)
+  const borderClass = tone === "amber"
+    ? selected ? "border-amber-200" : "border-amber-300/55"
+    : tone === "cyan"
+      ? selected ? "border-cyan-100" : "border-cyan-300/55"
+      : selected ? "border-violet-100" : "border-violet-300/55"
+  const ringClass = selected ? "ring-2 ring-white/45" : ""
+
+  const pointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    onSelect()
+    if (disabled) return
+    event.preventDefault()
+    const target = event.target as HTMLElement
+    dragState.current = {
+      mode: target.dataset.resizeHandle === "true" ? "resize" : "move",
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      box,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+  const pointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const state = dragState.current
+    const parentRect = event.currentTarget.parentElement?.getBoundingClientRect()
+    if (!state || !parentRect) return
+    const dx = ((event.clientX - state.startX) / parentRect.width) * canvas.width
+    const dy = ((event.clientY - state.startY) / parentRect.height) * canvas.height
+    if (state.mode === "resize") {
+      onChange({ width: state.box.width + dx, height: state.box.height + dy })
+    } else {
+      onChange({ x: state.box.x + dx, y: state.box.y + dy })
+    }
+  }
+  const pointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const state = dragState.current
+    if (!state) return
+    dragState.current = null
+    if (event.currentTarget.hasPointerCapture(state.pointerId)) {
+      event.currentTarget.releasePointerCapture(state.pointerId)
+    }
+  }
+  const keyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return
+    const delta = event.shiftKey ? 10 : 1
+    if (event.key === "ArrowLeft") {
+      event.preventDefault()
+      onChange({ x: box.x - delta })
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault()
+      onChange({ x: box.x + delta })
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault()
+      onChange({ y: box.y - delta })
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault()
+      onChange({ y: box.y + delta })
+    }
+  }
+
+  return (
+    <div
+      className={`pointer-events-auto absolute z-20 overflow-hidden rounded-md border border-dashed ${borderClass} ${ringClass} ${disabled ? "cursor-default" : "cursor-move"} ${inactive ? "opacity-60" : ""}`}
+      style={{
+        left: `${(box.x / canvas.width) * 100}%`,
+        top: `${(box.y / canvas.height) * 100}%`,
+        width: `${(box.width / canvas.width) * 100}%`,
+        height: `${(box.height / canvas.height) * 100}%`,
+      }}
+      role="button"
+      tabIndex={0}
+      aria-label={label}
+      onPointerDown={pointerDown}
+      onPointerMove={pointerMove}
+      onPointerUp={pointerUp}
+      onPointerCancel={pointerUp}
+      onKeyDown={keyDown}
+    >
+      {children}
+      {inactive ? (
+        <span className="absolute right-1 top-1 rounded bg-black/65 px-1.5 py-0.5 text-[8px] uppercase tracking-wide text-zinc-300">
+          off playhead
+        </span>
+      ) : null}
+      {resize && !disabled ? (
+        <span
+          data-resize-handle="true"
+          className="absolute bottom-0 right-0 size-4 cursor-nwse-resize rounded-tl-md border-l border-t border-white/45 bg-white/25"
+          aria-hidden="true"
+        />
+      ) : null}
+    </div>
+  )
+}
+
+function isTimelineVisible(currentTime: number, timelineStart: number, duration: number) {
+  return currentTime >= timelineStart && currentTime <= timelineStart + duration
+}
+
+function uniqueById<T>(items: T[], getId: (item: T) => string) {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    const id = getId(item)
+    if (seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
+}
+
 function ReviewWorkflowPanel({
   activeCandidate,
   planIsDirty,
@@ -1801,6 +2232,7 @@ function ProductionInspector({
   const audioClip = audioTrack?.clips.find((clip) => clip.id === selectedAudioClipId) ?? audioTrack?.clips[0]
   const transition = plan.timeline.transitions.find((entry) => entry.id === selectedTransitionId) ?? plan.timeline.transitions[0]
   const titleCard = plan.timeline.titleCards.find((entry) => entry.id === selectedTitleCardId) ?? plan.timeline.titleCards[0]
+  const titleCardBox = titleCard ? getTitleCardCanvasBox(plan, titleCard) : null
   const captionStyle = plan.timeline.captionStyle ?? {
     mode: "burn-in" as const,
     preset: "clean" as const,
@@ -1853,13 +2285,13 @@ function ProductionInspector({
           />
           <div className="grid grid-cols-2 gap-2">
             <NumberEditor label="Timeline" value={overlayEntry.clip.timelineStart} min={0} step={0.1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { timelineStart: value }))} />
-            <NumberEditor label="Opacity" value={overlayEntry.clip.opacity} min={0} max={1} step={0.05} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { opacity: value }))} />
+            <NumberEditor label="Opacity" value={overlayEntry.clip.opacity} min={0} max={1} step={0.05} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClipCanvasBox(current, overlayEntry.clip.id, { opacity: value }))} />
             <NumberEditor label="In" value={overlayEntry.clip.sourceStart} min={0} max={overlayEntry.clip.sourceEnd - 0.01} step={0.1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { sourceStart: value }))} />
             <NumberEditor label="Out" value={overlayEntry.clip.sourceEnd} min={overlayEntry.clip.sourceStart + 0.01} step={0.1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { sourceEnd: value }))} />
-            <NumberEditor label="X" value={overlayEntry.clip.x} min={0} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { x: Math.round(value) }))} />
-            <NumberEditor label="Y" value={overlayEntry.clip.y} min={0} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { y: Math.round(value) }))} />
-            <NumberEditor label="Width" value={overlayEntry.clip.width} min={1} max={plan.project.width} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { width: Math.round(value) }))} />
-            <NumberEditor label="Height" value={overlayEntry.clip.height} min={1} max={plan.project.height} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClip(current, overlayEntry.clip.id, { height: Math.round(value) }))} />
+            <NumberEditor label="X" value={overlayEntry.clip.x} min={0} max={plan.project.width - overlayEntry.clip.width} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClipCanvasBox(current, overlayEntry.clip.id, { x: Math.round(value) }))} />
+            <NumberEditor label="Y" value={overlayEntry.clip.y} min={0} max={plan.project.height - overlayEntry.clip.height} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClipCanvasBox(current, overlayEntry.clip.id, { y: Math.round(value) }))} />
+            <NumberEditor label="Width" value={overlayEntry.clip.width} min={24} max={plan.project.width} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClipCanvasBox(current, overlayEntry.clip.id, { width: Math.round(value) }))} />
+            <NumberEditor label="Height" value={overlayEntry.clip.height} min={24} max={plan.project.height} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateOverlayClipCanvasBox(current, overlayEntry.clip.id, { height: Math.round(value) }))} />
           </div>
           <SelectEditor
             label="Fit"
@@ -1951,6 +2383,16 @@ function ProductionInspector({
             <NumberEditor label="Timeline" value={titleCard.timelineStart} min={0} step={0.1} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { timelineStart: value }))} />
             <NumberEditor label="Duration" value={titleCard.duration} min={0.5} max={30} step={0.1} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { duration: value }))} />
           </div>
+          {titleCardBox ? (
+            <div className="grid grid-cols-3 gap-2">
+              <NumberEditor label="X" value={titleCardBox.x} min={0} max={plan.project.width - titleCardBox.width} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCardCanvasBox(current, titleCard.id, { x: Math.round(value) }))} />
+              <NumberEditor label="Y" value={titleCardBox.y} min={0} max={plan.project.height - titleCardBox.height} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCardCanvasBox(current, titleCard.id, { y: Math.round(value) }))} />
+              <NumberEditor label="Width" value={titleCardBox.width} min={48} max={plan.project.width} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCardCanvasBox(current, titleCard.id, { width: Math.round(value) }))} />
+              <NumberEditor label="Height" value={titleCardBox.height} min={48} max={plan.project.height} step={1} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCardCanvasBox(current, titleCard.id, { height: Math.round(value) }))} />
+              <NumberEditor label="Opacity" value={titleCardBox.opacity} min={0} max={1} step={0.05} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCardCanvasBox(current, titleCard.id, { opacity: value }))} />
+              <NumberEditor label="Font scale" value={titleCardBox.fontScale} min={0.5} max={2} step={0.05} suffix="x" disabled={disabled} onChange={(value) => onApply((current) => updateTitleCardCanvasBox(current, titleCard.id, { fontScale: value }))} />
+            </div>
+          ) : null}
           <div className="grid grid-cols-3 gap-2">
             <ColorEditor label="Bg" value={titleCard.background} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { background: value }))} />
             <ColorEditor label="Text" value={titleCard.textColor} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { textColor: value }))} />
