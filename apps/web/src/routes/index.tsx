@@ -35,6 +35,7 @@ import {
   buildTimelineSegments,
   applyProductionPreset,
   formatTimecode,
+  getSubtitleProvider,
   getTitleCardCanvasBox,
   getPlanTrackCounts,
   getTimelineDuration,
@@ -50,13 +51,17 @@ import {
   updateOverlayClip,
   updateOverlayClipCanvasBox,
   updatePlanClip,
+  setSubtitleProviderMode,
+  subtitleProviderOptions,
   updateTitleCard,
   updateTitleCardCanvasBox,
+  updateSubtitleProvider,
   updateTransition,
   type CaptionStyle,
   type EditPlan,
   type OverlayClip,
   type ProductionPresetId,
+  type SubtitleProviderMode,
   type TitleCard,
   type TimelineSegment,
 } from "#/lib/edit-plan.ts"
@@ -2233,6 +2238,11 @@ function ProductionInspector({
   const transition = plan.timeline.transitions.find((entry) => entry.id === selectedTransitionId) ?? plan.timeline.transitions[0]
   const titleCard = plan.timeline.titleCards.find((entry) => entry.id === selectedTitleCardId) ?? plan.timeline.titleCards[0]
   const titleCardBox = titleCard ? getTitleCardCanvasBox(plan, titleCard) : null
+  const subtitleProvider = getSubtitleProvider(plan)
+  const subtitleProviderOption = subtitleProviderOptions.find((option) => option.id === subtitleProvider?.mode) ?? subtitleProviderOptions[0]!
+  const availableSubtitleProviderOptions = subtitleProviderOptions.filter((option) =>
+    !option.requiresCaptionsAsset || Boolean(plan.timeline.captionsAssetId),
+  )
   const captionStyle = plan.timeline.captionStyle ?? {
     mode: "burn-in" as const,
     preset: "clean" as const,
@@ -2398,6 +2408,66 @@ function ProductionInspector({
             <ColorEditor label="Text" value={titleCard.textColor} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { textColor: value }))} />
             <ColorEditor label="Accent" value={titleCard.accentColor} disabled={disabled} onChange={(value) => onApply((current) => updateTitleCard(current, titleCard.id, { accentColor: value }))} />
           </div>
+        </InspectorSection>
+      ) : null}
+
+      {subtitleProvider ? (
+        <InspectorSection title="Subtitle provider">
+          <SelectEditor
+            label="Provider"
+            value={subtitleProvider.mode}
+            options={availableSubtitleProviderOptions.map((option) => ({ value: option.id, label: option.label }))}
+            disabled={disabled}
+            onChange={(value) => onApply((current) => setSubtitleProviderMode(current, value as SubtitleProviderMode))}
+          />
+          <div className={`rounded-md border p-2 text-[9px] leading-relaxed ${
+            subtitleProviderOption.privacy === "external-api"
+              ? "border-amber-300/20 bg-amber-300/[0.06] text-amber-100/80"
+              : "border-emerald-300/15 bg-emerald-300/[0.06] text-emerald-100/80"
+          }`}>
+            <p className="font-semibold text-zinc-200">{subtitleProviderOption.cost} · {subtitleProviderOption.privacy.replace("-", " ")}</p>
+            <p className="mt-1 text-zinc-500">{subtitleProviderOption.description}</p>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <SelectEditor
+              label="Status"
+              value={subtitleProvider.status}
+              options={["selected", "needs-generation", "generated", "provided", "failed"].map((value) => ({ value, label: value }))}
+              disabled={disabled}
+              onChange={(value) => onApply((current) => updateSubtitleProvider(current, { status: value as "selected" | "needs-generation" | "generated" | "provided" | "failed" }))}
+            />
+            <NumberEditor
+              label="Est. cost"
+              value={subtitleProvider.estimatedCostUsd ?? 0}
+              min={0}
+              max={10_000}
+              step={0.001}
+              suffix="$"
+              disabled={disabled}
+              onChange={(value) => onApply((current) => updateSubtitleProvider(current, { estimatedCostUsd: value }))}
+            />
+          </div>
+          <TextEditor
+            label="Model"
+            value={subtitleProvider.model ?? ""}
+            disabled={disabled}
+            onChange={(value) => onApply((current) => updateSubtitleProvider(current, { model: value.trim() || undefined }))}
+          />
+          <TextEditor
+            label="Language"
+            value={subtitleProvider.language ?? ""}
+            disabled={disabled}
+            onChange={(value) => onApply((current) => updateSubtitleProvider(current, { language: value.trim() || undefined }))}
+          />
+          <TextEditor
+            label="Notes"
+            value={subtitleProvider.notes ?? ""}
+            disabled={disabled}
+            onChange={(value) => onApply((current) => updateSubtitleProvider(current, { notes: value.trim() || undefined }))}
+          />
+          <p className="text-[9px] leading-relaxed text-zinc-600">
+            This selector records the approved caption source. API providers still require an agent-run caption pass before the plan has an attached SRT/VTT asset.
+          </p>
         </InspectorSection>
       ) : null}
 

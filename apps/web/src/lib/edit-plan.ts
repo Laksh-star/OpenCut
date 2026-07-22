@@ -11,6 +11,8 @@ export type AudioClip = AudioTrack["clips"][number]
 export type Transition = EditPlanV2["timeline"]["transitions"][number]
 export type TitleCard = EditPlanV2["timeline"]["titleCards"][number]
 export type CaptionStyle = NonNullable<EditPlanV2["timeline"]["captionStyle"]>
+export type SubtitleProvider = NonNullable<EditPlanV2["timeline"]["subtitleProvider"]>
+export type SubtitleProviderMode = SubtitleProvider["mode"]
 export type DuckingSettings = NonNullable<NonNullable<EditPlanV2["timeline"]["audioMix"]>["ducking"]>
 export type ProductionPresetId = "clean-interview" | "bold-social" | "minimal-archive"
 export type CanvasBox = {
@@ -342,6 +344,130 @@ export function updateCaptionStyle(
   })
 }
 
+export const subtitleProviderOptions: Array<{
+  id: SubtitleProviderMode
+  label: string
+  description: string
+  privacy: "local-only" | "external-api" | "provided"
+  cost: string
+  requiresCaptionsAsset?: boolean
+}> = [
+  {
+    id: "local-whisper",
+    label: "Local Whisper",
+    description: "Run transcription locally when Whisper is installed. Best privacy, slower on long files, no API media upload.",
+    privacy: "local-only",
+    cost: "No API cost",
+  },
+  {
+    id: "openai-api",
+    label: "OpenAI API",
+    description: "Use OpenAI transcription models when explicitly authorized. Sends extracted audio chunks to OpenAI.",
+    privacy: "external-api",
+    cost: "API usage cost",
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    description: "Use an OpenRouter transcription route when explicitly authorized. Sends extracted audio chunks through OpenRouter.",
+    privacy: "external-api",
+    cost: "Provider usage cost",
+  },
+  {
+    id: "provided-captions",
+    label: "Provided SRT/VTT",
+    description: "Skip transcription and use an existing trusted caption file attached to this plan.",
+    privacy: "provided",
+    cost: "No transcription cost",
+    requiresCaptionsAsset: true,
+  },
+]
+
+const defaultSubtitleProvider = (
+  mode: SubtitleProviderMode,
+  hasCaptionsAsset: boolean,
+): SubtitleProvider => {
+  if (mode === "openai-api") {
+    return {
+      mode,
+      status: "selected",
+      model: "gpt-4o-mini-transcribe",
+      notes: "Requires explicit approval before extracted audio is sent to OpenAI.",
+    }
+  }
+  if (mode === "openrouter") {
+    return {
+      mode,
+      status: "selected",
+      model: "openai/whisper-large-v3",
+      notes: "Requires explicit approval before extracted audio is sent through OpenRouter.",
+    }
+  }
+  if (mode === "provided-captions") {
+    return {
+      mode,
+      status: hasCaptionsAsset ? "provided" : "needs-generation",
+      notes: "Uses the attached caption asset; no transcription provider will be called.",
+    }
+  }
+  return {
+    mode: "local-whisper",
+    status: "selected",
+    model: "whisper-local",
+    notes: "Preferred default when available because source audio stays local.",
+  }
+}
+
+export function getSubtitleProvider(plan: EditPlan): SubtitleProvider | null {
+  if (plan.version !== "2") return null
+  if (plan.timeline.subtitleProvider) return plan.timeline.subtitleProvider
+  return defaultSubtitleProvider(
+    plan.timeline.captionsAssetId ? "provided-captions" : "local-whisper",
+    Boolean(plan.timeline.captionsAssetId),
+  )
+}
+
+export function setSubtitleProviderMode(
+  plan: EditPlan,
+  mode: SubtitleProviderMode,
+): EditPlan {
+  if (plan.version !== "2") return plan
+  const hasCaptionsAsset = Boolean(plan.timeline.captionsAssetId)
+  if (mode === "provided-captions" && !hasCaptionsAsset) return plan
+  return parseEditPlan({
+    ...plan,
+    timeline: {
+      ...plan.timeline,
+      subtitleProvider: defaultSubtitleProvider(mode, hasCaptionsAsset),
+    },
+  })
+}
+
+export function updateSubtitleProvider(
+  plan: EditPlan,
+  patch: Partial<SubtitleProvider>,
+): EditPlan {
+  if (plan.version !== "2") return plan
+  const current = getSubtitleProvider(plan) ?? defaultSubtitleProvider("local-whisper", Boolean(plan.timeline.captionsAssetId))
+  const next = {
+    ...current,
+    ...patch,
+    estimatedCostUsd: patch.estimatedCostUsd === undefined
+      ? current.estimatedCostUsd
+      : clamp(patch.estimatedCostUsd, 0, 10_000),
+  }
+  if (next.mode === "provided-captions" && !plan.timeline.captionsAssetId) {
+    return setSubtitleProviderMode(plan, "local-whisper")
+  }
+  return parseEditPlan({
+    ...plan,
+    timeline: {
+      ...plan.timeline,
+      subtitleProvider: next,
+    },
+  })
+}
+
 export function updateDucking(
   plan: EditPlan,
   patch: Partial<DuckingSettings>,
@@ -464,6 +590,21 @@ export function movePlanClip(plan: EditPlan, clipId: string, direction: -1 | 1):
 
 export function setPlanCaptionsEnabled(plan: EditPlan, enabled: boolean): EditPlan {
   const captionAsset = plan.assets.find((asset) => asset.kind === "captions")
+  if (plan.version === "2") {
+    const captionsAssetId = enabled ? captionAsset?.id : undefined
+    const currentProvider = plan.timeline.subtitleProvider
+    const subtitleProvider = !captionsAssetId && currentProvider?.mode === "provided-captions"
+      ? defaultSubtitleProvider("local-whisper", false)
+      : currentProvider ?? (captionsAssetId ? defaultSubtitleProvider("provided-captions", true) : undefined)
+    return parseEditPlan({
+      ...plan,
+      timeline: {
+        ...plan.timeline,
+        captionsAssetId,
+        ...(subtitleProvider ? { subtitleProvider } : {}),
+      },
+    })
+  }
   return parseEditPlan({
     ...plan,
     timeline: {

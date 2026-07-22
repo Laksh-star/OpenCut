@@ -226,6 +226,15 @@ const captionStyleSchema = z.object({
   alignment: z.enum(["bottom", "middle", "top"]).default("bottom"),
 });
 
+const subtitleProviderSchema = z.object({
+  mode: z.enum(["local-whisper", "openai-api", "openrouter", "provided-captions"]).default("local-whisper"),
+  status: z.enum(["selected", "needs-generation", "generated", "provided", "failed"]).default("selected"),
+  model: z.string().trim().min(1).max(160).optional(),
+  language: z.string().trim().min(2).max(20).optional(),
+  estimatedCostUsd: z.number().min(0).max(10_000).optional(),
+  notes: z.string().trim().max(500).optional(),
+});
+
 const audioMixSchema = z.object({
   ducking: z.object({
     enabled: z.boolean().default(true),
@@ -249,6 +258,7 @@ export const editPlanV2Schema = z
       transitions: z.array(transitionSchema).default([]),
       titleCards: z.array(titleCardSchema).default([]),
       captionsAssetId: identifierSchema.optional(),
+      subtitleProvider: subtitleProviderSchema.optional(),
       captionStyle: captionStyleSchema.optional(),
       audioMix: audioMixSchema,
     }),
@@ -373,6 +383,13 @@ export const editPlanV2Schema = z
         code: "custom",
         message: "captionStyle requires captionsAssetId",
         path: ["timeline", "captionStyle"],
+      });
+    }
+    if (plan.timeline.subtitleProvider?.mode === "provided-captions" && !plan.timeline.captionsAssetId) {
+      context.addIssue({
+        code: "custom",
+        message: "provided-captions subtitle provider requires captionsAssetId",
+        path: ["timeline", "subtitleProvider"],
       });
     }
 

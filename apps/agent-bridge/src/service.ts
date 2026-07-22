@@ -16,7 +16,7 @@ const MAX_PREVIEW_SECONDS = 300;
 
 export const capabilities = {
   server: "opencut-agent-bridge",
-  version: "0.6.0",
+  version: "0.7.0",
   adapter: "ffmpeg-production-graph",
   editorApiConnected: false,
   operations: [
@@ -40,6 +40,8 @@ export const capabilities = {
     audioMixing: true,
     smartAudioDucking: true,
     burnedInCaptions: true,
+    subtitleProviderSelection: true,
+    subtitleProviders: ["local-whisper", "openai-api", "openrouter", "provided-captions"],
     transitions: true,
     titleCards: true,
     batchRendering: true,

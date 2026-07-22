@@ -182,6 +182,14 @@ describe("editPlanSchema", () => {
         transitions: [{ id: "main-fade", fromClipId: "opening", toClipId: "closing", duration: 0.5 }],
         titleCards: [{ id: "outro", template: "outro", timelineStart: 9.5, duration: 1.5, title: "Thanks" }],
         captionsAssetId: "captions",
+        subtitleProvider: {
+          mode: "openrouter",
+          model: "openai/whisper-large-v3",
+          language: "en",
+          status: "generated",
+          estimatedCostUsd: 0.02,
+          notes: "Audio chunks approved for OpenRouter transcription.",
+        },
         captionStyle: { mode: "both", preset: "bold" },
         audioMix: { ducking: { enabled: true } },
       },
@@ -189,7 +197,19 @@ describe("editPlanSchema", () => {
     expect(plan.version).toBe("2");
     if (plan.version !== "2") throw new Error("Expected v2 plan");
     expect(plan.timeline.audioTracks[0]?.role).toBe("music");
+    expect(plan.timeline.subtitleProvider).toMatchObject({ mode: "openrouter", model: "openai/whisper-large-v3", status: "generated" });
     expect(getPlanDuration(plan)).toBe(11);
+  });
+
+  test("requires provided subtitle providers to reference attached captions", () => {
+    expect(() => parseEditPlan({
+      ...validPlan,
+      version: "2",
+      timeline: {
+        ...validPlan.timeline,
+        subtitleProvider: { mode: "provided-captions" },
+      },
+    })).toThrow("provided-captions subtitle provider requires captionsAssetId");
   });
 
   test("rejects transitions that do not connect adjacent primary clips", () => {

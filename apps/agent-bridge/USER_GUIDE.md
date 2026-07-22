@@ -71,17 +71,19 @@ rendered preview as the final approval artifact.
 
 ## Current subtitle workflow
 
-The agent workflow can use local transcription or an external API when
-authorized, but provider selection is not yet exposed as a first-class UI
-control. Future work should make subtitle generation selectable between:
+The review UI now exposes a first-class subtitle-provider selector for each v2
+candidate. It records the approved caption source as part of the edit plan:
 
 - local Whisper;
 - OpenAI API transcription models;
 - OpenRouter transcription routes;
 - supplied local SRT/VTT files.
 
-For now, check the caption preview and ask for a fresh caption pass when timing,
-line breaks, spelling, or speaker context are weak.
+The selector includes local/external privacy and cost notes. It does not yet run
+the provider itself; an agent-run caption pass still generates or attaches the
+SRT/VTT asset before preview/final captions are available. Check the caption
+preview and ask for a fresh caption pass when timing, line breaks, spelling, or
+speaker context are weak.
 
 ## Hard boundaries
 

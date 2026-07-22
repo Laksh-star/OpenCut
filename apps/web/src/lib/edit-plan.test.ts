@@ -4,6 +4,7 @@ import {
   applyProductionPreset,
   buildTimelineSegments,
   formatTimecode,
+  getSubtitleProvider,
   getTitleCardCanvasBox,
   getPlanTrackCounts,
   getTimelineDuration,
@@ -11,6 +12,7 @@ import {
   sampleEditPlan,
   movePlanClip,
   setPlanCaptionsEnabled,
+  setSubtitleProviderMode,
   updateAudioClip,
   updateAudioTrack,
   updateCaptionStyle,
@@ -18,6 +20,7 @@ import {
   updateOverlayClip,
   updateOverlayClipCanvasBox,
   updatePlanClip,
+  updateSubtitleProvider,
   updateTitleCard,
   updateTitleCardCanvasBox,
   updateTransition,
@@ -179,6 +182,55 @@ describe("edit plan review model", () => {
       opacity: 0,
       fontScale: 2,
     })
+  })
+
+  test("records subtitle provider choices without requiring hidden execution", () => {
+    const layered = parseEditPlan({
+      ...sampleEditPlan,
+      version: "2",
+      timeline: {
+        ...sampleEditPlan.timeline,
+        overlayTracks: [],
+        audioTracks: [],
+        transitions: [],
+        titleCards: [],
+        captionsAssetId: undefined,
+      },
+    })
+
+    expect(getSubtitleProvider(layered)).toMatchObject({ mode: "local-whisper", status: "selected" })
+
+    let revised = setSubtitleProviderMode(layered, "openai-api")
+    revised = updateSubtitleProvider(revised, {
+      language: "en",
+      estimatedCostUsd: 0.019,
+      notes: "Approved extracted-audio API transcription.",
+    })
+    expect(revised.version).toBe("2")
+    if (revised.version !== "2") throw new Error("Expected v2 plan")
+    expect(revised.timeline.subtitleProvider).toMatchObject({
+      mode: "openai-api",
+      model: "gpt-4o-mini-transcribe",
+      language: "en",
+      estimatedCostUsd: 0.019,
+    })
+
+    revised = setPlanCaptionsEnabled(revised, true)
+    expect(revised.version).toBe("2")
+    if (revised.version !== "2") throw new Error("Expected v2 plan")
+    expect(revised.timeline.captionsAssetId).toBe("captions")
+    expect(revised.timeline.subtitleProvider?.mode).toBe("openai-api")
+
+    const provided = setSubtitleProviderMode(revised, "provided-captions")
+    expect(provided.version).toBe("2")
+    if (provided.version !== "2") throw new Error("Expected v2 plan")
+    expect(provided.timeline.subtitleProvider).toMatchObject({ mode: "provided-captions", status: "provided" })
+
+    const captionsOff = setPlanCaptionsEnabled(provided, false)
+    expect(captionsOff.version).toBe("2")
+    if (captionsOff.version !== "2") throw new Error("Expected v2 plan")
+    expect(captionsOff.timeline.captionsAssetId).toBeUndefined()
+    expect(captionsOff.timeline.subtitleProvider?.mode).toBe("local-whisper")
   })
 
   test("applies production presets across captions, titles, transitions, and ducking", () => {

@@ -23,6 +23,7 @@ The fork now contains:
 - reusable production presets for caption/title/transition/ducking treatment;
 - candidate strategy/rationale metadata, per-clip rationale, and a clearer five-step review workflow in the UI;
 - WYSIWYG preview-monitor controls for existing visual layers, including drag/resize overlay and title boxes, keyboard nudging, caption safe-zone placement, and schema-backed title-card layout/opacity/font-scale fields;
+- a schema-backed subtitle-provider selector covering local Whisper, OpenAI API, OpenRouter, and provided SRT/VTT captions, with cost/privacy guidance separated from actual provider execution;
 - local export packages that bundle rendered MP4s, approved plans, project records, captions, contact sheets, a manifest, and a summary without copying the original large source video;
 - a one-command setup packager that emits workspace-scoped environment, Codex MCP, and machine-readable setup files;
 - a repo-local user guide that explains what OpenCut controls versus what Codex/agent workflows author;
@@ -81,6 +82,7 @@ The rebased implementation stack is:
 | `ad2f3319` | Add preflight and export handoff | Added backend preflight enforcement, production presets, export packages, MCP exposure, and expanded tests/smokes. |
 | `2026-07-22 UX/rationale pass` | Clarify review workflow and candidate intent | Adds candidate strategy/rationale metadata, per-clip rationale validation, a five-step review panel, candidate intent cards, a user guide, and updated skill instructions for distinct-moment candidate generation. |
 | `2026-07-22 WYSIWYG pass` | Add visual layer adjustment controls | Adds preview-monitor drag/resize/nudge controls for existing overlay and title layers, draggable caption safe-zone placement, schema-backed title-card layout fields, renderer support, docs, and tests. |
+| `2026-07-22 subtitle-provider pass` | Add subtitle provider selection | Adds v2 subtitle-provider metadata, review UI provider selector, cost/privacy guidance, schema validation, docs, skill contract updates, and tests while keeping provider execution agent-driven. |
 
 This report may be followed by documentation-only commits. Exact branch totals
 should be read from Git rather than treated as a fixed figure in this cumulative
@@ -134,6 +136,7 @@ A-roll and adds:
 - validated transitions between adjacent A-roll clips;
 - timed `intro`, `outro`, and `lower-third` title-card templates;
 - optional title-card layout fields for canvas position, box size, opacity, and font scale;
+- optional subtitle-provider metadata for local Whisper, OpenAI API, OpenRouter, or provided captions;
 - selectable, burned-in, or dual caption modes with clean, bold, and minimal style presets;
 - audio assets in addition to video and caption assets;
 - duplicate track/clip validation, canvas-bound checks, same-track overlap rejection, and duration calculation across every layer;
@@ -215,6 +218,7 @@ The web app now presents a usable review boundary rather than a placeholder page
 - display agent-authored rationale for why a candidate exists and why a selected source clip was used;
 - guide the reviewer through the concrete five-step path: select, save, preview, approve, and export;
 - directly manipulate existing visual layers on the preview monitor: overlay/title boxes can be dragged, resized, clicked for selection, and keyboard-nudged, while burned-in captions can be dragged between safe top/middle/bottom placement zones;
+- select and persist subtitle-provider metadata with provider-specific cost/privacy guidance before any agent-run caption pass;
 - apply production presets across caption styling, title colors, transition treatment, and ducking;
 - save immutable numbered plan revisions and invalidate stale previews after an edit;
 - display backend preflight results for the active saved revision before preview or final approval;
@@ -419,21 +423,22 @@ generated real-media artifacts.
 | Upstream rebase audit | **Pass:** branch rebased cleanly onto `upstream/main` at `5e0696bc`; local and `origin/codex/agent-bridge-mvp` were in sync after push; no feature-file conflicts were predicted or observed. |
 | Review-clarity schema/UI pass | **Pass:** candidate strategy/rationale defaults parse, per-clip rationale references are validated against real plan clip IDs, candidate cards show intent, the selected-clip inspector explains why the clip was used, and the UI exposes a five-step select-save-preview-approve-export guide. |
 | WYSIWYG visual-controls pass | **Pass:** schema-backed title layout fields parse and reject canvas escapes; renderer rasterizes title/caption graphics with the new layout fields; web model tests cover constrained overlay/title canvas boxes; preview monitor UI typechecks with drag/resize/nudge controls. |
-| Agent bridge unit tests | **Pass:** 32 tests across v1/v2 schema migration, overlays, title-card layout validation, ducked audio, transitions, production graphics, setup packaging, FFmpeg profiles, timed-caption grouping, byte ranges, path security, project paths, immutable revisions, review events, candidate isolation, candidate rationale validation, batch metadata persistence, preflight blockers, and export package creation. |
+| Subtitle-provider selector pass | **Pass:** v2 plans parse provider metadata for local Whisper, OpenAI API, OpenRouter, and provided captions; schema validation rejects provided-captions mode without an attached caption asset; the review UI typechecks with provider/status/model/language/cost/notes controls. |
+| Agent bridge unit tests | **Pass:** 33 tests across v1/v2 schema migration, overlays, title-card layout validation, subtitle-provider validation, ducked audio, transitions, production graphics, setup packaging, FFmpeg profiles, timed-caption grouping, byte ranges, path security, project paths, immutable revisions, review events, candidate isolation, candidate rationale validation, batch metadata persistence, preflight blockers, and export package creation. |
 | Agent bridge TypeScript check | **Pass:** `tsc --noEmit`. |
 | Agent bridge build | **Pass:** Bun build generated the Node-target bundle. |
 | Approval/render smoke | **Pass:** approved plan and project record persisted; 2-second generated-media MP4 rendered. |
 | FFmpeg render smoke | **Pass:** 2-second MP4 rendered; FFmpeg exited successfully. |
 | Review-session HTTP smoke | **Pass:** opaque registration, authorized 100-byte range, session captions, two candidate selections, two revision-specific previews, batch preflight, one explicit batch approval, two final renders, SHA-256 provenance, persisted batch state, export package creation, and audit state. |
-| Web model tests | **Pass:** 12 tests covering shared-schema parsing, layered track summaries, timeline editing/reordering, v2 production-control helpers, WYSIWYG canvas-box constraints, production presets, captions, preview gates, and session helpers. |
+| Web model tests | **Pass:** 13 tests covering shared-schema parsing, layered track summaries, timeline editing/reordering, v2 production-control helpers, WYSIWYG canvas-box constraints, subtitle-provider updates, production presets, captions, preview gates, and session helpers. |
 | Web TypeScript check | **Pass:** `tsc --noEmit`. |
 | Web production build | **Pass:** Vite client and server builds completed. |
-| Workflow site validation | **Pass:** `npm test` rebuilt the Sites project, verified the root redirect, preserved the sandboxed iframe/CSP shell, confirmed the 13-stage workflow, and asserted the new candidate-rationale, subtitle-provider, five-step workflow, and WYSIWYG-next-pass copy. |
+| Workflow site validation | **Pass:** `npm test` rebuilt the Sites project, verified the root redirect, preserved the sandboxed iframe/CSP shell, confirmed the 13-stage workflow, and asserted the candidate-rationale, subtitle-provider, five-step workflow, and WYSIWYG copy. |
 | Browser workflow | **Pass:** a local v2 review session displayed editable overlay, audio mix, transition, title-card, caption-style, and ducking controls; both preview-ready candidates were added to the batch queue; **Approve batch** rendered both candidates to `rendered`; browser logs contained zero warnings/errors. |
 | Production render smoke | **Pass:** generated A-roll, B-roll, music, SRT captions, a crossfade, intro/outro cards, burned captions, selectable captions, and speech-keyed ducking produced a 4.5-second H.264/AAC/`mov_text` MP4; five extracted frames visually confirmed the title and caption overlays. |
 | Setup packager smoke | **Pass:** workspace-scoped environment, Codex MCP TOML, and setup manifest generated; escaping output rejected. |
 | Real output inspection | **Pass:** FFprobe confirmed the expected video, audio, subtitle, duration, resolution, and frame rate. |
-| MCP tool-list smoke | **Pass:** all eleven MCP tools are listed, `opencut_capabilities` reports bridge version `0.6.0`, and capability flags include batch rendering, production-layer editing, WYSIWYG visual controls, title-card layout, preflight checks, and export packages. |
+| MCP tool-list smoke | **Pass:** all eleven MCP tools are listed, `opencut_capabilities` reports bridge version `0.7.0`, and capability flags include batch rendering, production-layer editing, WYSIWYG visual controls, title-card layout, subtitle-provider selection, preflight checks, and export packages. |
 | Reusable skill validation | **Pass:** `opencut-producer` OpenAI metadata parses with Ruby YAML; bundled session validator accepts synthetic manifests containing `strategy`, `rationale`, `clipRationales`, and v2 title-card layout fields. Older local saved sessions failed validation only because their referenced local source media was missing, which is the expected safety behavior. |
 
 ## 9. What each component is responsible for
@@ -496,7 +501,7 @@ The MVP deliberately does not yet provide:
 - formats other than MP4;
 - remote rendering, uploading, or social publishing;
 - multi-user or remote authentication beyond the loopback-only local boundary and per-process session tokens;
-- a first-class subtitle-provider selector in the UI; the current skill guidance distinguishes local Whisper, OpenAI API, OpenRouter, and provided captions, but provider execution remains agent/workflow-driven;
+- provider-specific transcription execution inside the review UI; the selector records local Whisper, OpenAI API, OpenRouter, or provided captions, but the actual caption-generation pass remains agent/workflow-driven;
 - automatic resolution of transcription errors, provider-specific word extraction, or semantic caption cleanup;
 - a GitHub pull request from the feature branch to the fork's `main` branch.
 
@@ -519,7 +524,7 @@ foundation:
 11. **Local export package — complete.** Rendered candidates can be bundled into a local handoff package with outputs, metadata, captions, contact sheets, manifest, and summary.
 12. **Review clarity and candidate rationale — complete.** The session schema now carries candidate strategy, candidate rationale, and per-clip rationale, and the UI explains the select-save-preview-approve-export path.
 13. **WYSIWYG visual adjustment surface — complete.** Existing overlay/title layers can be selected, dragged, resized, keyboard-nudged, and fine-tuned through inspector fields; burned-in captions can be moved between safe placement zones.
-14. **Add a subtitle-provider selector.** Make transcription/caption generation selectable between local Whisper, OpenAI API, OpenRouter, and provided captions, with provider-specific cost/privacy notes before execution.
+14. **Subtitle-provider selector — complete.** The v2 plan and review UI can record local Whisper, OpenAI API, OpenRouter, or provided SRT/VTT as the caption source with provider-specific cost/privacy notes. Provider-specific execution adapters and automatic caption-quality repair remain future work.
 15. **Formalize the native project adapter.** Map the current plan/project record into OpenCut's Editor API when that upstream contract is stable.
 16. **Add track creation/deletion and keyframes.** The reviewer can edit existing v2 layers today; adding new layers and keyframed motion/effects would move the UI closer to a true OpenCut-native editor.
 17. **Add publication as a separate gated workflow.** Keep export/publishing out of the renderer and require an independent destination-specific approval.

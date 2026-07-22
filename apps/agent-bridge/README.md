@@ -1,6 +1,6 @@
 # OpenCut Agent Bridge
 
-This package is the first working seam between AI agents and the OpenCut rewrite. It exposes a local MCP server that can inspect media, validate and save declarative edit plans, upgrade v1 plans to the v2 production contract, compile deterministic FFmpeg filter graphs, run review-session preflight checks, render bounded MP4 previews with layered video, speech-keyed music ducking, transitions, title cards, and styled captions, and create local handoff packages for rendered candidates.
+This package is the first working seam between AI agents and the OpenCut rewrite. It exposes a local MCP server that can inspect media, validate and save declarative edit plans, upgrade v1 plans to the v2 production contract, compile deterministic FFmpeg filter graphs, run review-session preflight checks, render bounded MP4 previews with layered video, speech-keyed music ducking, transitions, title cards, styled captions, schema-backed subtitle-provider metadata, and create local handoff packages for rendered candidates.
 
 It does **not** automate the browser, publish media, or claim to be OpenCut's future Editor API. The adapter is deliberately isolated so the FFmpeg preview backend can later be replaced by OpenCut's native API and headless renderer.
 
@@ -153,12 +153,15 @@ treatment, ducking, and all video/audio/caption assets. The inspector can revise
 the primary A-roll plus existing v2 production controls: overlay timing/source
 range/canvas placement/fit/opacity/audio, audio track role/timing/source/volume,
 transition type/duration, title-card text/timing/colors/layout/opacity/font
-scale, caption style, and smart ducking. The preview monitor also provides a
-WYSIWYG layer surface for existing visual elements: overlay/title boxes can be
-dragged, resized, clicked for selection, and keyboard-nudged, while burned-in
-caption placement can be moved between safe top/middle/bottom zones by dragging
-the caption preview. Every change still flows through the immutable revision
-endpoint and requires a fresh preview before final approval. The approval panel
+scale, subtitle-provider metadata, caption style, and smart ducking. The
+subtitle provider selector records local Whisper, OpenAI API, OpenRouter, or
+provided captions with cost/privacy guidance before any agent-run caption pass.
+The preview monitor also provides a WYSIWYG layer surface for existing visual
+elements: overlay/title boxes can be dragged, resized, clicked for selection,
+and keyboard-nudged, while burned-in caption placement can be moved between safe
+top/middle/bottom zones by dragging the caption preview. Every change still
+flows through the immutable revision endpoint and requires a fresh preview
+before final approval. The approval panel
 displays backend preflight checks for the next preview or final action, and
 rendered candidates can be bundled into a timestamped export package containing
 MP4 copies, approved plans, project records, captions, contact sheets, a
@@ -266,5 +269,5 @@ Session IDs are process-local: restarting the bridge creates a new short URL,
 while the manifest's selected, batch, and rendered state remains on disk.
 
 See [USER_GUIDE.md](USER_GUIDE.md) for a concise reviewer workflow and the
-current product gaps around new layer creation, keyframes, and transcription
-provider selection.
+current product gaps around new layer creation, keyframes, and provider-specific
+transcription execution from inside the review UI.
