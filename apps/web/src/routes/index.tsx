@@ -100,6 +100,17 @@ type ExportPackageResult = {
   session: ReviewSession
 }
 
+type CaptionGenerationResult = {
+  mode: SubtitleProviderMode
+  status: "generated" | "provided"
+  captionsPath: string
+  cues: number
+  audioPath?: string
+  uploadedAudioBytes?: number
+  estimatedCostUsd?: number
+  session: ReviewSession
+}
+
 const bridgeUrl = (
   import.meta.env.VITE_OPENCUT_BRIDGE_URL ?? "http://127.0.0.1:3210"
 ).replace(/\/$/, "")
@@ -138,6 +149,9 @@ function AgentReviewWorkspace() {
   const [captionsEnabled, setCaptionsEnabled] = useState(false)
   const [captionsLoading, setCaptionsLoading] = useState(false)
   const [captionsError, setCaptionsError] = useState<string | null>(null)
+  const [captionGenerationLoading, setCaptionGenerationLoading] = useState(false)
+  const [captionGenerationError, setCaptionGenerationError] = useState<string | null>(null)
+  const [captionGenerationResult, setCaptionGenerationResult] = useState<CaptionGenerationResult | null>(null)
   const [reviewSession, setReviewSession] = useState<ReviewSession | null>(null)
   const [activeReviewCandidateId, setActiveReviewCandidateId] = useState<string | null>(null)
   const [sessionError, setSessionError] = useState<string | null>(null)
@@ -201,7 +215,7 @@ function AgentReviewWorkspace() {
     .filter((candidate) => candidate.outputExists || candidate.status === "rendered")
     .map((candidate) => candidate.id) ?? []
   const latestBatchActive = latestBatch?.status === "queued" || latestBatch?.status === "rendering"
-  const interactionLocked = reviewState === "saving" || reviewState === "previewing" || reviewState === "rendering" || batchRendering || latestBatchActive
+  const interactionLocked = reviewState === "saving" || reviewState === "previewing" || reviewState === "rendering" || batchRendering || latestBatchActive || captionGenerationLoading
   const canEditPlan = Boolean(
     reviewSession &&
     activeCandidate &&
@@ -333,6 +347,8 @@ function AgentReviewWorkspace() {
     )
     setApprovalResult(null)
     setApprovalError(candidate.error ?? null)
+    setCaptionGenerationError(null)
+    setCaptionGenerationResult(null)
     setPlanError(null)
     setRevisionNote("")
     const asset = mediaAssetForPlan(session, candidate.plan)
@@ -418,6 +434,45 @@ function AgentReviewWorkspace() {
     } catch (error) {
       setReviewState("failed")
       setApprovalError(error instanceof Error ? error.message : "Could not render the preview")
+    }
+  }
+
+  async function generateCaptions() {
+    if (!reviewSession || !activeCandidate || planIsDirty || interactionLocked) return
+    const subtitleProvider = getSubtitleProvider(plan)
+    if (!subtitleProvider) return
+    const usesExternalApi = subtitleProvider.mode === "openai-api" || subtitleProvider.mode === "openrouter"
+    if (usesExternalApi) {
+      const approved = window.confirm(
+        `Generate captions with ${subtitleProvider.mode}? This extracts only this candidate's dialogue audio and uploads that WAV audio to the selected API provider. Continue?`,
+      )
+      if (!approved) return
+    }
+
+    setCaptionGenerationLoading(true)
+    setCaptionGenerationError(null)
+    setCaptionGenerationResult(null)
+    try {
+      const response = await fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId ?? "")}/generate-captions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          candidateId: activeCandidate.id,
+          approvalToken: reviewSession.approvalToken,
+          externalUploadApproved: usesExternalApi,
+        }),
+      })
+      const payload = (await response.json()) as CaptionGenerationResult & { error?: string }
+      if (!response.ok || !payload.session) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+      setReviewSession(payload.session)
+      const candidate = candidateForSelection(payload.session)
+      if (candidate) applyReviewCandidate(payload.session, candidate)
+      setCaptionsEnabled(true)
+      setCaptionGenerationResult(payload)
+    } catch (error) {
+      setCaptionGenerationError(error instanceof Error ? error.message : "Could not generate captions")
+    } finally {
+      setCaptionGenerationLoading(false)
     }
   }
 
@@ -1336,6 +1391,10 @@ function AgentReviewWorkspace() {
               <ProductionInspector
                 plan={plan}
                 disabled={!canEditPlan}
+                planIsDirty={planIsDirty}
+                captionGenerationLoading={captionGenerationLoading}
+                captionGenerationError={captionGenerationError}
+                captionGenerationResult={captionGenerationResult}
                 selectedOverlayClipId={selectedOverlayClipId}
                 selectedAudioTrackId={selectedAudioTrackId}
                 selectedAudioClipId={selectedAudioClipId}
@@ -1350,6 +1409,7 @@ function AgentReviewWorkspace() {
                 onSelectAudioClip={setSelectedAudioClipId}
                 onSelectTransition={setSelectedTransitionId}
                 onSelectTitleCard={setSelectedTitleCardId}
+                onGenerateCaptions={() => void generateCaptions()}
                 onApply={reviseProductionPlan}
               />
               <PreflightPanel
@@ -2055,6 +2115,9 @@ function ReviewWorkflowPanel({
   const batchActive = latestBatch?.status === "queued" || latestBatch?.status === "rendering"
   const packaged = Boolean(latestExportPackage)
   const activeCandidateTitle = activeCandidate?.title ?? "Selected candidate"
+  const subtitleProvider = activeCandidate ? getSubtitleProvider(activeCandidate.plan) : null
+  const captionsReady = Boolean(activeCandidate?.plan.timeline.captionsAssetId)
+  const captionsNeedAttention = Boolean(subtitleProvider && !captionsReady && subtitleProvider.mode !== "provided-captions")
   const steps = [
     {
       label: "1 Select",
@@ -2069,13 +2132,23 @@ function ReviewWorkflowPanel({
       detail: planIsDirty ? "Unsaved edits must become a new revision." : "Current revision is saved.",
     },
     {
-      label: "3 Preview",
+      label: "3 Captions",
+      done: captionsReady,
+      active: revisionSaved && captionsNeedAttention,
+      detail: captionsReady
+        ? "Caption asset is attached."
+        : subtitleProvider
+          ? "Generate captions if this candidate needs subtitles."
+          : "Optional for plans without subtitles.",
+    },
+    {
+      label: "4 Preview",
       done: hasCurrentPreview,
       active: revisionSaved && !hasCurrentPreview,
       detail: hasCurrentPreview ? "Preview matches this revision." : preflightBlocks > 0 ? `${preflightBlocks} blocker${preflightBlocks === 1 ? "" : "s"} before preview/final.` : "Render a fast preview before approval.",
     },
     {
-      label: "4 Approve",
+      label: "5 Approve",
       done: Boolean(rendered),
       active: hasCurrentPreview && !rendered,
       detail: batchActive
@@ -2085,7 +2158,7 @@ function ReviewWorkflowPanel({
           : "Approve final for one candidate or add preview-ready candidates to batch.",
     },
     {
-      label: "5 Export",
+      label: "6 Export",
       done: packaged,
       active: Boolean(rendered) && !packaged,
       detail: packaged ? "Local package created." : rendered ? "Package rendered outputs for handoff." : "Available after render.",
@@ -2093,7 +2166,7 @@ function ReviewWorkflowPanel({
   ]
 
   return (
-    <div className="mb-3 grid gap-2 rounded-lg border border-white/10 bg-black/20 p-3 lg:grid-cols-5">
+    <div className="mb-3 grid gap-2 rounded-lg border border-white/10 bg-black/20 p-3 md:grid-cols-2 xl:grid-cols-6">
       {steps.map((step) => (
         <div
           key={step.label}
@@ -2201,6 +2274,10 @@ function PreflightPanel({
 function ProductionInspector({
   plan,
   disabled,
+  planIsDirty,
+  captionGenerationLoading,
+  captionGenerationError,
+  captionGenerationResult,
   selectedOverlayClipId,
   selectedAudioTrackId,
   selectedAudioClipId,
@@ -2211,10 +2288,15 @@ function ProductionInspector({
   onSelectAudioClip,
   onSelectTransition,
   onSelectTitleCard,
+  onGenerateCaptions,
   onApply,
 }: {
   plan: EditPlan
   disabled: boolean
+  planIsDirty: boolean
+  captionGenerationLoading: boolean
+  captionGenerationError: string | null
+  captionGenerationResult: CaptionGenerationResult | null
   selectedOverlayClipId: string
   selectedAudioTrackId: string
   selectedAudioClipId: string
@@ -2225,6 +2307,7 @@ function ProductionInspector({
   onSelectAudioClip: (value: string) => void
   onSelectTransition: (value: string) => void
   onSelectTitleCard: (value: string) => void
+  onGenerateCaptions: () => void
   onApply: (edit: (current: EditPlan) => EditPlan) => void
 }) {
   if (plan.version !== "2") return null
@@ -2243,6 +2326,10 @@ function ProductionInspector({
   const availableSubtitleProviderOptions = subtitleProviderOptions.filter((option) =>
     !option.requiresCaptionsAsset || Boolean(plan.timeline.captionsAssetId),
   )
+  const captionGenerationActionLabel = subtitleProvider?.mode === "provided-captions"
+    ? "Confirm caption asset"
+    : "Generate captions"
+  const captionGenerationDisabled = disabled || planIsDirty || captionGenerationLoading
   const captionStyle = plan.timeline.captionStyle ?? {
     mode: "burn-in" as const,
     preset: "clean" as const,
@@ -2465,9 +2552,35 @@ function ProductionInspector({
             disabled={disabled}
             onChange={(value) => onApply((current) => updateSubtitleProvider(current, { notes: value.trim() || undefined }))}
           />
-          <p className="text-[9px] leading-relaxed text-zinc-600">
-            This selector records the approved caption source. API providers still require an agent-run caption pass before the plan has an attached SRT/VTT asset.
-          </p>
+          <div className="rounded-lg border border-white/10 bg-black/25 p-2">
+            <button
+              className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-violet-300/25 bg-violet-400/12 px-3 py-2 text-[10px] font-semibold text-violet-100 transition hover:border-violet-200/45 hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={captionGenerationDisabled}
+              onClick={onGenerateCaptions}
+            >
+              {captionGenerationLoading ? <LoaderCircle className="size-3 animate-spin" /> : <Captions className="size-3" />}
+              {captionGenerationLoading ? "Generating captions…" : captionGenerationActionLabel}
+            </button>
+            {planIsDirty ? (
+              <p className="mt-2 text-[9px] leading-relaxed text-amber-200/80">
+                Save this revision before generating captions so the provider runs against the exact approved plan.
+              </p>
+            ) : (
+              <p className="mt-2 text-[9px] leading-relaxed text-zinc-600">
+                Local Whisper runs on this device. OpenAI/OpenRouter ask for upload confirmation and require the bridge process to have the matching API key.
+              </p>
+            )}
+            {captionGenerationError ? (
+              <p className="mt-2 rounded border border-red-400/20 bg-red-400/10 p-2 text-[9px] leading-relaxed text-red-200">
+                {captionGenerationError}
+              </p>
+            ) : null}
+            {captionGenerationResult ? (
+              <p className="mt-2 rounded border border-emerald-300/15 bg-emerald-300/[0.06] p-2 text-[9px] leading-relaxed text-emerald-100/85">
+                {captionGenerationResult.status === "provided" ? "Confirmed" : "Generated"} {captionGenerationResult.cues} cues with {captionGenerationResult.mode}; saved to {captionGenerationResult.captionsPath}. Render a fresh preview before final approval.
+              </p>
+            ) : null}
+          </div>
         </InspectorSection>
       ) : null}
 

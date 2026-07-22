@@ -48,6 +48,11 @@ const previewSessionCandidateSchema = z.object({
   approvalToken: z.string().uuid(),
   renderLimitSeconds: z.number().min(0.1).max(120).default(60),
 });
+const generateCaptionsSchema = z.object({
+  candidateId: z.string().min(1),
+  approvalToken: z.string().uuid(),
+  externalUploadApproved: z.boolean().default(false),
+});
 const approveSessionCandidateSchema = z.object({
   candidateId: z.string().min(1),
   approvalToken: z.string().uuid(),
@@ -306,6 +311,45 @@ const server = createServer(async (request, response) => {
         throw new Error("This candidate does not have a rendered preview");
       }
       await streamMedia(request, response, candidate.previewOutputPath);
+      return;
+    }
+
+    const generateCaptionsRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/generate-captions$/);
+    if (request.method === "POST" && generateCaptionsRoute) {
+      if (approvalInProgress) {
+        sendJson(request, response, 409, { error: "Another local render or caption-generation action is already in progress" });
+        return;
+      }
+      const input = generateCaptionsSchema.parse(await readJsonBody(request));
+      const registered = registry.get(generateCaptionsRoute[0]!);
+      if (registered.approvalToken !== input.approvalToken) {
+        sendJson(request, response, 403, { error: "Invalid review action token" });
+        return;
+      }
+      const loaded = await registry.load(generateCaptionsRoute[0]!);
+      if (loaded.selectedCandidateId !== input.candidateId) throw new Error("Candidate must be selected before caption generation");
+      const candidate = loaded.candidates.find((entry) => entry.id === input.candidateId);
+      if (!candidate) throw new Error("Unknown candidate");
+      if (candidate.outputExists || candidate.status === "rendered") throw new Error("Rendered candidates are immutable");
+      if (candidate.status === "queued" || candidate.status === "rendering") throw new Error("Queued or rendering candidates cannot generate captions");
+      approvalInProgress = true;
+      try {
+        const { result, session } = await registry.generateCaptions(generateCaptionsRoute[0]!, input.candidateId, {
+          externalUploadApproved: input.externalUploadApproved,
+        });
+        sendJson(request, response, 200, {
+          mode: result.mode,
+          status: result.status,
+          captionsPath: result.captionsPath,
+          cues: result.cues,
+          audioPath: result.audioPath,
+          uploadedAudioBytes: result.uploadedAudioBytes,
+          estimatedCostUsd: result.estimatedCostUsd,
+          session,
+        });
+      } finally {
+        approvalInProgress = false;
+      }
       return;
     }
 

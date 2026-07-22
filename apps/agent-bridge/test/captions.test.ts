@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import { alignCaptionWords, captionsToSrt } from "../src/captions.ts";
+import { parseEditPlan } from "../src/schema.ts";
+import { generateCandidateCaptions, transcriptionToCaptions } from "../src/subtitle-providers.ts";
 
 describe("word-timed caption alignment", () => {
   test("creates readable cues at sentence and speaker boundaries", () => {
@@ -22,5 +24,51 @@ describe("word-timed caption alignment", () => {
     expect(captionsToSrt([{ start: 1.2, end: 3.45, text: "A clean caption" }])).toContain(
       "00:00:01,200 --> 00:00:03,450",
     );
+  });
+
+  test("converts provider word timestamps into caption cues", () => {
+    const cues = transcriptionToCaptions({
+      words: [
+        { word: "OpenCut", start: 0, end: 0.4 },
+        { word: "keeps", start: 0.41, end: 0.7 },
+        { word: "reviews", start: 0.71, end: 1.1 },
+        { word: "editable.", start: 1.11, end: 1.6 },
+      ],
+    }, 1.6);
+
+    expect(cues).toEqual([
+      { start: 0, end: 1.6, text: "OpenCut keeps reviews editable." },
+    ]);
+  });
+
+  test("falls back to segment or plain text transcriptions", () => {
+    expect(transcriptionToCaptions({
+      segments: [{ start: 0, end: 2, text: "Use the clearest moment." }],
+    }, 2)).toEqual([{ start: 0, end: 2, text: "Use the clearest moment." }]);
+
+    const approximate = transcriptionToCaptions({ text: "A generated transcript without timestamps" }, 4);
+    expect(approximate).toHaveLength(1);
+    expect(approximate[0]?.text).toBe("A generated transcript without timestamps");
+    expect(approximate[0]?.end).toBe(4);
+  });
+
+  test("requires explicit approval before API transcription uploads extracted audio", async () => {
+    const plan = parseEditPlan({
+      version: "2",
+      project: { name: "Needs captions", width: 1280, height: 720 },
+      assets: [{ id: "source", path: "missing-source.mp4", kind: "video" }],
+      timeline: {
+        clips: [{ id: "clip", assetId: "source", sourceStart: 0, sourceEnd: 3 }],
+        subtitleProvider: { mode: "openrouter", status: "selected" },
+      },
+      output: { path: "candidate/renders/output.mp4" },
+    });
+
+    await expect(generateCandidateCaptions("/tmp/opencut-caption-gate", {
+      id: "candidate",
+      revision: 1,
+      planPath: "candidate/edit-plan.json",
+      plan,
+    })).rejects.toThrow("requires explicit approval");
   });
 });

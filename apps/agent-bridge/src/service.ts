@@ -9,14 +9,14 @@ import { inspectMedia, runProcess } from "./media.ts";
 import { getWorkspaceRoot, resolveInputPath, resolveOutputPath } from "./paths.ts";
 import { createReviewExportPackage } from "./export-package.ts";
 import { preflightReviewSession, type PreflightMode } from "./preflight.ts";
-import { loadReviewSession } from "./review-session.ts";
+import { loadReviewSession, ReviewSessionRegistry } from "./review-session.ts";
 import { getPlanDuration, parseEditPlan, upgradeEditPlanToV2, type EditPlan } from "./schema.ts";
 
 const MAX_PREVIEW_SECONDS = 300;
 
 export const capabilities = {
   server: "opencut-agent-bridge",
-  version: "0.7.0",
+  version: "0.8.0",
   adapter: "ffmpeg-production-graph",
   editorApiConnected: false,
   operations: [
@@ -27,6 +27,7 @@ export const capabilities = {
     "compile_edit_plan",
     "render_preview",
     "build_word_timed_captions",
+    "generate_review_captions",
     "preflight_review_session",
     "approve_and_render_project",
     "approve_review_batch",
@@ -41,6 +42,8 @@ export const capabilities = {
     smartAudioDucking: true,
     burnedInCaptions: true,
     subtitleProviderSelection: true,
+    subtitleProviderExecution: true,
+    captionGenerationEndpoint: true,
     subtitleProviders: ["local-whisper", "openai-api", "openrouter", "provided-captions"],
     transitions: true,
     titleCards: true,
@@ -160,6 +163,35 @@ export const createReviewExportPackageFromManifest = async (
   const manifestPath = await resolveInputPath(root, requestedManifestPath);
   const session = await loadReviewSession(manifestPath);
   return createReviewExportPackage(root, manifestPath, session, options);
+};
+
+export const generateReviewCaptions = async (
+  requestedManifestPath: string,
+  options: {
+    candidateId: string;
+    externalUploadApproved?: boolean;
+  },
+) => {
+  const registry = new ReviewSessionRegistry();
+  const registered = await registry.register(requestedManifestPath);
+  const loaded = await registry.load(registered.sessionId);
+  if (loaded.selectedCandidateId && loaded.selectedCandidateId !== options.candidateId) {
+    throw new Error("Candidate must be selected in the review session before caption generation");
+  }
+  const { result, session } = await registry.generateCaptions(registered.sessionId, options.candidateId, {
+    externalUploadApproved: Boolean(options.externalUploadApproved),
+  });
+  const candidate = session.candidates.find((entry) => entry.id === options.candidateId);
+  return {
+    mode: result.mode,
+    status: result.status,
+    captionsPath: result.captionsPath,
+    cues: result.cues,
+    audioPath: result.audioPath,
+    uploadedAudioBytes: result.uploadedAudioBytes,
+    estimatedCostUsd: result.estimatedCostUsd,
+    candidateRevision: candidate?.revision,
+  };
 };
 
 export const buildWordTimedCaptions = async (

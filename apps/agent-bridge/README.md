@@ -1,6 +1,6 @@
 # OpenCut Agent Bridge
 
-This package is the first working seam between AI agents and the OpenCut rewrite. It exposes a local MCP server that can inspect media, validate and save declarative edit plans, upgrade v1 plans to the v2 production contract, compile deterministic FFmpeg filter graphs, run review-session preflight checks, render bounded MP4 previews with layered video, speech-keyed music ducking, transitions, title cards, styled captions, schema-backed subtitle-provider metadata, and create local handoff packages for rendered candidates.
+This package is the first working seam between AI agents and the OpenCut rewrite. It exposes a local MCP server that can inspect media, validate and save declarative edit plans, upgrade v1 plans to the v2 production contract, compile deterministic FFmpeg filter graphs, run review-session preflight checks, generate or confirm review-candidate captions through approved subtitle providers, render bounded MP4 previews with layered video, speech-keyed music ducking, transitions, title cards, styled captions, schema-backed subtitle-provider metadata, and create local handoff packages for rendered candidates.
 
 It does **not** automate the browser, publish media, or claim to be OpenCut's future Editor API. The adapter is deliberately isolated so the FFmpeg preview backend can later be replaced by OpenCut's native API and headless renderer.
 
@@ -14,6 +14,7 @@ It does **not** automate the browser, publish media, or claim to be OpenCut's fu
 - `opencut_compile_edit_plan`
 - `opencut_render_preview`
 - `opencut_build_word_timed_captions`
+- `opencut_generate_review_captions`
 - `opencut_preflight_review_session`
 - `opencut_approve_and_render_project`
 - `opencut_create_export_package`
@@ -21,7 +22,11 @@ It does **not** automate the browser, publish media, or claim to be OpenCut's fu
 Every file operation is restricted to `OPENCUT_AGENT_ROOT`. Inputs must exist,
 missing output directories are created only after their nearest existing parent
 has been verified inside that root, FFmpeg is invoked without a shell, preview
-duration is capped at five minutes, and no tool uploads or publishes anything.
+duration is capped at five minutes, and no tool publishes anything. Local
+Whisper caption generation stays on-device. OpenAI/OpenRouter caption
+generation uploads only the extracted review-candidate WAV audio and requires
+`externalUploadApproved=true` plus the matching API key in the bridge process
+environment.
 
 ## Run locally
 
@@ -73,6 +78,10 @@ and permits one approval render at a time. Override the port with
 `OPENCUT_WEB_ORIGINS`.
 
 FFmpeg and ffprobe must be available on `PATH` for media inspection and preview rendering.
+For provider-backed caption generation, local Whisper mode expects `whisper` on
+`PATH` unless `OPENCUT_LOCAL_WHISPER_COMMAND` or `WHISPER_COMMAND` points to a
+different executable. OpenAI API mode requires `OPENAI_API_KEY`. OpenRouter
+mode requires `OPENROUTER_API_KEY`.
 
 ## Connect an agent
 
@@ -109,9 +118,10 @@ OPENCUT_AGENT_ROOT = "/absolute/path/to/video-workspace"
 4. Validate and save it.
 5. Compile it and review the returned FFmpeg argv.
 6. Render a short preview.
-7. Run review-session preflight before preview, final, batch, or export actions.
-8. Ask for human approval before a longer render or any publishing workflow.
-9. Package rendered candidates for local delivery without copying the original source video.
+7. If captions are missing or need replacement, run `opencut_generate_review_captions` or the review UI's **Generate captions** action. External API modes require explicit upload approval.
+8. Run review-session preflight before preview, final, batch, or export actions.
+9. Ask for human approval before a longer render or any publishing workflow.
+10. Package rendered candidates for local delivery without copying the original source video.
 
 Version 1 remains supported unchanged. Version 2 keeps the sequential clips as
 the primary A-roll and adds z-ordered video overlay tracks, independent audio
@@ -154,8 +164,11 @@ the primary A-roll plus existing v2 production controls: overlay timing/source
 range/canvas placement/fit/opacity/audio, audio track role/timing/source/volume,
 transition type/duration, title-card text/timing/colors/layout/opacity/font
 scale, subtitle-provider metadata, caption style, and smart ducking. The
-subtitle provider selector records local Whisper, OpenAI API, OpenRouter, or
-provided captions with cost/privacy guidance before any agent-run caption pass.
+subtitle provider selector exposes local Whisper, OpenAI API, OpenRouter, or
+provided captions with cost/privacy guidance. The adjacent generation action can
+then confirm an attached caption asset or extract the selected candidate's audio
+and run the approved provider. The resulting SRT is attached to the plan as a
+new numbered revision and invalidates any older preview.
 The preview monitor also provides a WYSIWYG layer surface for existing visual
 elements: overlay/title boxes can be dragged, resized, clicked for selection,
 and keyboard-nudged, while burned-in caption placement can be moved between safe
@@ -234,8 +247,9 @@ multi-gigabyte source file again.
 
 Candidate selection, preview rendering, batch inclusion, and final approval are
 deliberately separate actions. Selecting a card cannot start FFmpeg. The visible
-five-step workflow explains the current state: **Select**, **Save**,
-**Preview**, **Approve**, and **Export**. The **Render preview** action produces
+six-step workflow explains the current state: **Select**, **Save**,
+**Captions**, **Preview**, **Approve**, and **Export**. Caption generation or
+provided-caption confirmation creates a new revision. The **Render preview** action produces
 a fast revision-specific file; **Approve final** stays locked until that exact
 revision has a preview. Preview-approved candidates can also be added to a batch
 queue and rendered sequentially through one explicit **Approve batch** action.
@@ -258,6 +272,7 @@ The HTTP surface for this workflow is:
 - `POST /v1/review-sessions/:id/notes` — append a revision-specific reviewer note;
 - `GET|HEAD /v1/review-sessions/:id/media/:assetId` — authorized range streaming;
 - `GET /v1/review-sessions/:id/candidates/:candidateId/captions` — authorized captions;
+- `POST /v1/review-sessions/:id/generate-captions` — token-gated caption generation or provided-caption confirmation for the selected candidate;
 - `POST /v1/review-sessions/:id/preflight` — read-only checks before preview, final, batch, or export actions;
 - `POST /v1/review-sessions/:id/render-preview` — token-gated fast preview;
 - `GET|HEAD /v1/review-sessions/:id/candidates/:candidateId/preview` — stream the authorized preview;
@@ -269,5 +284,5 @@ Session IDs are process-local: restarting the bridge creates a new short URL,
 while the manifest's selected, batch, and rendered state remains on disk.
 
 See [USER_GUIDE.md](USER_GUIDE.md) for a concise reviewer workflow and the
-current product gaps around new layer creation, keyframes, and provider-specific
-transcription execution from inside the review UI.
+current product gaps around new layer creation, keyframes, and caption-quality
+repair.

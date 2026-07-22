@@ -13,7 +13,7 @@ const fixture = async () => {
   await writeFile(join(root, "source.mp4"), "video");
   await writeFile(join(root, "candidate", "captions.srt"), "1\n00:00:00,000 --> 00:00:01,000\nHello\n");
   await writeFile(join(root, "candidate", "edit-plan.json"), JSON.stringify({
-    version: "1",
+    version: "2",
     project: { name: "Candidate", width: 1280, height: 720 },
     assets: [
       { id: "source", path: "source.mp4", kind: "video" },
@@ -132,6 +132,46 @@ describe("review sessions", () => {
     expect(withNote.reviewerNotes[0]?.text).toBe("The new ending is cleaner.");
   });
 
+  test("generates caption revisions from an approved provider path", async () => {
+    const root = await fixture();
+    process.env.OPENCUT_AGENT_ROOT = root;
+    const registry = new ReviewSessionRegistry();
+    const registered = await registry.register("review-session.json");
+    await registry.update(registered.sessionId, (session) => ({
+      ...session,
+      selectedCandidateId: "candidate",
+      candidates: session.candidates.map((candidate) => ({
+        ...candidate,
+        status: "preview-ready",
+        lastPreviewRevision: 1,
+        previewOutputPath: "candidate/renders/preview-r1.mp4",
+      })),
+    }));
+
+    const { result, session } = await registry.generateCaptions(registered.sessionId, "candidate");
+
+    expect(result).toMatchObject({
+      mode: "provided-captions",
+      status: "provided",
+      captionsPath: "candidate/captions.srt",
+      cues: 1,
+    });
+    expect(session.candidates[0]?.revision).toBe(2);
+    expect(session.candidates[0]?.lastPreviewRevision).toBeUndefined();
+    expect(session.candidates[0]?.previewOutputPath).toBeUndefined();
+    expect(await Bun.file(join(root, "candidate", "revisions", "revision-1.edit-plan.json")).exists()).toBe(true);
+    expect(await Bun.file(join(root, "candidate", "revisions", "revision-2.edit-plan.json")).exists()).toBe(true);
+    const revisedPlan = JSON.parse(await readFile(join(root, "candidate", "edit-plan.json"), "utf8"));
+    expect(revisedPlan.timeline.subtitleProvider).toMatchObject({
+      mode: "provided-captions",
+      status: "provided",
+    });
+    expect(session.events.map((event) => event.type)).toEqual([
+      "captions-generation-requested",
+      "captions-generated",
+    ]);
+  });
+
   test("blocks final preflight until the current revision has a preview", async () => {
     const root = await fixture();
     process.env.OPENCUT_AGENT_ROOT = root;
@@ -148,6 +188,18 @@ describe("review sessions", () => {
     });
     expect(preflight.summary.block).toBeGreaterThan(0);
     expect(preflight.candidates[0]?.checks.some((check) => check.id === "preview:fresh" && check.severity === "block")).toBe(true);
+  });
+
+  test("does not generate captions for candidates with an existing final output", async () => {
+    const root = await fixture();
+    process.env.OPENCUT_AGENT_ROOT = root;
+    await writeFile(join(root, "candidate", "renders", "output.mp4"), "rendered");
+    const registry = new ReviewSessionRegistry();
+    const registered = await registry.register("review-session.json");
+
+    await expect(registry.generateCaptions(registered.sessionId, "candidate")).rejects.toThrow(
+      "Rendered candidates are immutable",
+    );
   });
 
   test("creates an export package for rendered candidates", async () => {

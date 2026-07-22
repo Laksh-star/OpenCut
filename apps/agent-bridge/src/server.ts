@@ -7,6 +7,7 @@ import {
   capabilities,
   compilePlanFile,
   createReviewExportPackageFromManifest,
+  generateReviewCaptions,
   inspectWorkspaceMedia,
   preflightReviewManifest,
   renderPlanPreview,
@@ -23,7 +24,7 @@ const jsonResult = (value: unknown) => ({
 
 export const buildServer = () => {
   const server = new McpServer(
-    { name: "opencut-agent-bridge", version: "0.7.0" },
+    { name: "opencut-agent-bridge", version: "0.8.0" },
     {
       instructions:
         "Inspect media before creating an edit plan. Validate, save, and compile the plan before rendering. Rendering only creates a local preview; this server never publishes media.",
@@ -137,7 +138,23 @@ export const buildServer = () => {
     async ({ transcript, outputPath, maximumCharactersPerLine, maximumLines, maximumCueSeconds, includeSpeakerLabels }) =>
       jsonResult(await buildWordTimedCaptions(transcript, outputPath, {
         maximumCharactersPerLine, maximumLines, maximumCueSeconds, includeSpeakerLabels,
-      }))
+    }))
+  );
+
+  server.registerTool(
+    "opencut_generate_review_captions",
+    {
+      description:
+        "Generate or confirm captions for a saved review-session candidate. Local Whisper keeps audio on-device. OpenAI/OpenRouter modes require externalUploadApproved=true and upload only the extracted candidate WAV audio.",
+      inputSchema: z.object({
+        manifestPath: z.string().min(1),
+        candidateId: z.string().min(1),
+        externalUploadApproved: z.boolean().default(false),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async ({ manifestPath, candidateId, externalUploadApproved }) =>
+      jsonResult(await generateReviewCaptions(manifestPath, { candidateId, externalUploadApproved }))
   );
 
   server.registerTool(

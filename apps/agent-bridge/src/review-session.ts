@@ -8,6 +8,7 @@ import { z } from "zod/v4";
 import { readEditPlan, writeEditPlan, writeJsonFile } from "./files.ts";
 import { getWorkspaceRoot, resolveInputPath, resolveOutputPath } from "./paths.ts";
 import { editPlanSchema, type EditPlan } from "./schema.ts";
+import { generateCandidateCaptions, type CaptionGenerationOptions } from "./subtitle-providers.ts";
 
 const identifier = z.string().min(1).max(80).regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
 const timestamp = z.string().datetime();
@@ -29,6 +30,9 @@ export const reviewEventTypeSchema = z.enum([
   "preview-requested",
   "preview-rendered",
   "preview-failed",
+  "captions-generation-requested",
+  "captions-generated",
+  "captions-generation-failed",
   "reviewer-note-added",
   "batch-approved",
   "batch-completed",
@@ -349,6 +353,107 @@ export class ReviewSessionRegistry {
         })],
       };
     });
+  }
+
+  async generateCaptions(sessionId: string, candidateId: string, options: CaptionGenerationOptions = {}) {
+    const root = await getWorkspaceRoot();
+    const registered = this.get(sessionId);
+    const session = await readReviewSession(registered.manifestPath);
+    const candidate = session.candidates.find((entry) => entry.id === candidateId);
+    if (!candidate) throw new Error("Unknown candidate");
+    if (candidate.status === "queued" || candidate.status === "rendering") {
+      throw new Error("Queued or rendering candidates cannot generate captions");
+    }
+    if (candidate.status === "rendered") {
+      throw new Error("Rendered candidates are immutable; create a new candidate to revise captions");
+    }
+    const planPath = await resolveInputPath(root, candidate.planPath);
+    const currentPlan = await readEditPlan(planPath);
+    assertCandidateOutput(candidate, currentPlan.output.path);
+    if (await fileExists(root, currentPlan.output.path)) {
+      throw new Error("Rendered candidates are immutable; create a new candidate to revise captions");
+    }
+    const providerMode = currentPlan.version === "2"
+      ? currentPlan.timeline.subtitleProvider?.mode ?? (currentPlan.timeline.captionsAssetId ? "provided-captions" : "local-whisper")
+      : "local-whisper";
+
+    await this.update(sessionId, (current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      events: [...current.events, createReviewEvent("captions-generation-requested", {
+        actor: "reviewer",
+        candidateId,
+        revision: candidate.revision,
+        detail: providerMode,
+      })],
+    }));
+
+    try {
+      const result = await generateCandidateCaptions(root, { ...candidate, plan: currentPlan }, options);
+      if (JSON.stringify(result.nextPlan.project) !== JSON.stringify(currentPlan.project)) {
+        throw new Error("Caption generation cannot replace project settings");
+      }
+      if (JSON.stringify(result.nextPlan.output) !== JSON.stringify(currentPlan.output)) {
+        throw new Error("Caption generation cannot replace the final output contract");
+      }
+      const nextRevision = candidate.revision + 1;
+      const revisionDirectory = posix.join(candidateDirectoryFor(candidate), "revisions");
+      const currentSnapshot = posix.join(revisionDirectory, `revision-${candidate.revision}.edit-plan.json`);
+      const nextSnapshot = posix.join(revisionDirectory, `revision-${nextRevision}.edit-plan.json`);
+      const currentSnapshotPath = await resolveOutputPath(root, currentSnapshot);
+      const nextSnapshotPath = await resolveOutputPath(root, nextSnapshot);
+      await mkdir(dirname(currentSnapshotPath), { recursive: true });
+      if (!(await fileExists(root, currentSnapshot))) await writeEditPlan(currentSnapshotPath, currentPlan);
+      await writeEditPlan(nextSnapshotPath, result.nextPlan);
+      await writeEditPlan(planPath, result.nextPlan);
+
+      const detail = [
+        result.mode,
+        `${result.cues} cues`,
+        result.captionsPath,
+        result.uploadedAudioBytes ? `${result.uploadedAudioBytes} uploaded audio bytes` : undefined,
+      ].filter(Boolean).join(" · ");
+
+      return {
+        result,
+        session: await this.update(sessionId, (current) => ({
+          ...current,
+          updatedAt: new Date().toISOString(),
+          candidates: current.candidates.map((entry) => entry.id === candidateId ? {
+            ...entry,
+            revision: nextRevision,
+            lastPreviewRevision: undefined,
+            previewOutputPath: undefined,
+            status: current.selectedCandidateId === candidateId ? "selected" : "ready-for-review",
+            error: undefined,
+          } : entry),
+          events: [...current.events, createReviewEvent("captions-generated", {
+            actor: "system",
+            candidateId,
+            revision: nextRevision,
+            detail: detail.slice(0, 1_000),
+          })],
+        })),
+      };
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).slice(-8_000);
+      await this.update(sessionId, (current) => ({
+        ...current,
+        updatedAt: new Date().toISOString(),
+        candidates: current.candidates.map((entry) => entry.id === candidateId ? {
+          ...entry,
+          status: "failed",
+          error: message,
+        } : entry),
+        events: [...current.events, createReviewEvent("captions-generation-failed", {
+          actor: "system",
+          candidateId,
+          revision: candidate.revision,
+          detail: message.slice(0, 1_000),
+        })],
+      }));
+      throw error;
+    }
   }
 
   async provenance(sessionId: string, candidateId: string) {

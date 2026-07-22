@@ -91,7 +91,7 @@ In the review workspace you can:
    three different editorial options unless the agent explicitly marks a
    narrative-segment candidate.
 3. Select a candidate without authorizing a render.
-4. Follow the visible five-step workflow: select, save, preview, approve, export.
+4. Follow the visible six-step workflow: select, save, captions, preview, approve, export.
 5. Stream even multi-gigabyte local source media with byte-range requests.
 6. Select timeline clips to seek to their exact source in/out points.
 7. Adjust in/out points, ordering, speed, volume, and caption inclusion.
@@ -102,7 +102,7 @@ In the review workspace you can:
 12. Reload without losing selection, revisions, preview state, batch state, notes, audit history, or final state.
 13. Edit v2 overlays, audio tracks, transitions, title cards, styled captions, ducking, and all layered media assets before previewing the compiled result.
 14. Drag and resize existing overlay/title boxes directly on the preview monitor, nudge them with the keyboard, and reposition burned-in captions by dragging their preview box.
-15. Choose the subtitle provider metadata for the candidate: local Whisper, OpenAI API, OpenRouter, or supplied SRT/VTT captions, with privacy/cost notes visible before any agent-run caption pass.
+15. Choose and run the subtitle provider for the candidate: local Whisper, OpenAI API, OpenRouter, or supplied SRT/VTT captions. External API modes require an explicit upload confirmation before extracted candidate audio leaves the machine.
 
 This is intentionally a review boundary, not a claim that the rewrite already
 has a complete editor. The current revision adapter remains FFmpeg-backed and
@@ -110,9 +110,9 @@ will move behind the native Editor API when that API lands.
 
 Current product gaps are tracked explicitly: the WYSIWYG surface edits existing
 agent-authored visual layers rather than creating new tracks or arbitrary
-keyframed effects, and the subtitle-provider selector records the approved
-provider choice but does not yet execute provider-specific transcription
-adapters from inside the review UI.
+keyframed effects. Subtitle-provider execution now exists in the local bridge,
+but quality repair, diarization, and provider availability still depend on the
+chosen local Whisper install or configured API keys.
 
 ## Contributing
 

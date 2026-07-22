@@ -25,10 +25,12 @@ The review UI is a human approval boundary. Work left to right:
 1. **Select** — choose a candidate to inspect. This does not render.
 2. **Save** — if you change timing, captions, or production settings, save a new
    revision.
-3. **Preview** — render a fast preview for the exact saved revision.
-4. **Approve** — approve one final render, or add preview-ready candidates to a
+3. **Generate captions** — when needed, run the selected subtitle provider or
+   confirm an attached SRT/VTT file. This creates a new revision.
+4. **Preview** — render a fast preview for the exact saved revision.
+5. **Approve** — approve one final render, or add preview-ready candidates to a
    batch and approve the batch.
-5. **Export** — after rendering, package the local outputs and lightweight
+6. **Export** — after rendering, package the local outputs and lightweight
    metadata for handoff.
 
 The UI now shows this sequence at the top of the session so the current state is
@@ -71,19 +73,24 @@ rendered preview as the final approval artifact.
 
 ## Current subtitle workflow
 
-The review UI now exposes a first-class subtitle-provider selector for each v2
-candidate. It records the approved caption source as part of the edit plan:
+The review UI exposes a first-class subtitle-provider selector for each v2
+candidate. It records the approved caption source as part of the edit plan and
+can run the selected provider:
 
 - local Whisper;
 - OpenAI API transcription models;
 - OpenRouter transcription routes;
 - supplied local SRT/VTT files.
 
-The selector includes local/external privacy and cost notes. It does not yet run
-the provider itself; an agent-run caption pass still generates or attaches the
-SRT/VTT asset before preview/final captions are available. Check the caption
-preview and ask for a fresh caption pass when timing, line breaks, spelling, or
-speaker context are weak.
+The selector includes local/external privacy and cost notes. Press **Generate
+captions** after selecting the provider. Local Whisper stays on this machine and
+requires a local Whisper command available to the bridge process. OpenAI API and
+OpenRouter modes ask for upload confirmation before sending the extracted
+candidate WAV audio, and require the matching API key in the bridge process
+environment. A successful provider pass saves an SRT asset into the candidate
+directory, attaches it to the edit plan, creates a new numbered revision, and
+invalidates any older preview. Check the caption preview and ask for a fresh
+caption pass when timing, line breaks, spelling, or speaker context are weak.
 
 ## Hard boundaries
 
