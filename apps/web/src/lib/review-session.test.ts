@@ -9,6 +9,7 @@ const session = {
   sourceAssets: [{ id: "interview", label: "Interview", path: sampleEditPlan.assets[0]!.path }],
   candidates: [{
     id: "one", title: "One", summary: "", planPath: "one/edit-plan.json", status: "selected",
+    strategy: "distinct-moment", rationale: "Strongest self-contained moment.", clipRationales: [],
     revision: 1, plan: sampleEditPlan, outputExists: false, previewExists: false,
   }],
 } satisfies ReviewSession

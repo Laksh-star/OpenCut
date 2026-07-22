@@ -14,6 +14,9 @@ export type ReviewCandidate = {
   id: string
   title: string
   summary: string
+  strategy: "unspecified" | "distinct-moment" | "narrative-segment" | "social-variant" | "archive-summary" | "manual"
+  rationale: string
+  clipRationales: Array<{ clipId: string; note: string }>
   planPath: string
   thumbnailPath?: string
   status: CandidateStatus

@@ -56,6 +56,20 @@ export const reviewerNoteSchema = z.object({
   createdAt: timestamp,
 });
 
+export const candidateStrategySchema = z.enum([
+  "unspecified",
+  "distinct-moment",
+  "narrative-segment",
+  "social-variant",
+  "archive-summary",
+  "manual",
+]);
+
+export const candidateClipRationaleSchema = z.object({
+  clipId: identifier,
+  note: z.string().trim().min(1).max(800),
+});
+
 export const renderBatchItemSchema = z.object({
   candidateId: identifier,
   revision: z.number().int().positive(),
@@ -113,6 +127,9 @@ export const reviewSessionSchema = z.object({
     id: identifier,
     title: z.string().min(1).max(160),
     summary: z.string().max(500).default(""),
+    strategy: candidateStrategySchema.default("unspecified"),
+    rationale: z.string().trim().max(1_200).default(""),
+    clipRationales: z.array(candidateClipRationaleSchema).default([]),
     planPath: z.string().min(1),
     thumbnailPath: z.string().min(1).optional(),
     status: candidateStatusSchema.default("ready-for-review"),
@@ -200,6 +217,12 @@ export const loadReviewSession = async (path: string): Promise<LoadedReviewSessi
     const plan = await readEditPlan(planPath);
     assertCandidateOutput(candidate, plan.output.path);
     if (candidate.previewOutputPath) assertCandidateOutput(candidate, candidate.previewOutputPath);
+    const planClipIds = new Set(plan.timeline.clips.map((clip) => clip.id));
+    for (const clipRationale of candidate.clipRationales) {
+      if (!planClipIds.has(clipRationale.clipId)) {
+        throw new Error(`Candidate ${candidate.id} rationale references unknown clip ${clipRationale.clipId}`);
+      }
+    }
     const outputExists = await fileExists(root, plan.output.path);
     const previewExists = await fileExists(root, candidate.previewOutputPath);
     return {

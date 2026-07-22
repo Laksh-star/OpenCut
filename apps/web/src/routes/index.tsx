@@ -169,6 +169,9 @@ function AgentReviewWorkspace() {
   const activeCandidate = reviewSession?.candidates.find(
     (candidate) => candidate.id === activeReviewCandidateId,
   )
+  const activeClipRationale = activeCandidate?.clipRationales.find(
+    (entry) => entry.clipId === selectedSegment?.clip.id,
+  )
   const planIsDirty = Boolean(activeCandidate && JSON.stringify(activeCandidate.plan) !== JSON.stringify(plan))
   const hasCurrentPreview = candidateHasCurrentPreview(activeCandidate)
   const sessionId = typeof window === "undefined"
@@ -882,10 +885,23 @@ function AgentReviewWorkspace() {
           <div className="mb-2 flex items-center justify-between gap-3">
             <div>
               <p className="text-xs font-medium text-zinc-200">{reviewSession.title}</p>
-              <p className="mt-0.5 text-[10px] text-zinc-500">Select a candidate for review. Selection never authorizes rendering.</p>
+              <p className="mt-0.5 text-[10px] text-zinc-500">
+                Compare the agent's candidates first. Selection, preview, final render, batch render, and export are separate choices.
+              </p>
             </div>
             <span className="text-[10px] text-zinc-500">{reviewSession.candidates.length} candidates</span>
           </div>
+          <ReviewWorkflowPanel
+            activeCandidate={activeCandidate}
+            planIsDirty={planIsDirty}
+            hasCurrentPreview={hasCurrentPreview}
+            batchCandidateCount={batchCandidateIds.length}
+            renderedCandidateCount={renderedCandidateIds.length}
+            latestBatch={latestBatch}
+            latestExportPackage={latestExportPackage}
+            preflightBlocks={activePreflightBlocks}
+            reviewState={reviewState}
+          />
           <div className="grid gap-2 md:grid-cols-3">
             {reviewSession.candidates.map((candidate) => {
               const selected = candidate.id === reviewSession.selectedCandidateId
@@ -921,6 +937,13 @@ function AgentReviewWorkspace() {
                       </span>
                     </div>
                     <p className="mt-1.5 line-clamp-2 text-[10px] leading-relaxed text-zinc-500">{candidate.summary || "Agent-proposed edit"}</p>
+                    <div className="mt-2 rounded-md border border-white/8 bg-black/20 p-2">
+                      <p className="text-[8px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Candidate intent</p>
+                      <p className="mt-1 text-[10px] font-medium text-zinc-300">{candidateStrategyLabel(candidate.strategy)}</p>
+                      <p className="mt-1 line-clamp-2 text-[9px] leading-relaxed text-zinc-500">
+                        {candidate.rationale || "No rationale recorded yet. Future generated sessions should explain why this candidate was selected."}
+                      </p>
+                    </div>
                     <p className="mt-2 font-mono text-[9px] text-zinc-600">r{candidate.revision} · {formatTimecode(getTimelineDuration(candidate.plan))} · {candidateTracks.primaryClips + candidateTracks.overlayClips + candidateTracks.audioClips} clips · v{candidate.plan.version}</p>
                     {candidate.plan.version === "2" ? <p className="mt-1 text-[9px] text-zinc-600">{candidateTracks.transitions} transitions · {candidateTracks.titleCards} titles · {candidateTracks.burnedCaptions ? "styled captions" : "selectable captions"}{candidateTracks.ducking ? " · ducking" : ""}</p> : null}
                   </button>
@@ -1217,6 +1240,14 @@ function AgentReviewWorkspace() {
               <InspectorSection title="Selection">
                 <InspectorValue label="Clip" value={humanizeId(selectedSegment.clip.id)} />
                 <InspectorValue label="Asset" value={selectedAsset?.id ?? selectedSegment.clip.assetId} />
+                {activeCandidate ? (
+                  <div className="rounded-lg border border-violet-300/15 bg-violet-400/[0.06] p-3">
+                    <p className="text-[9px] font-semibold uppercase tracking-[0.14em] text-violet-200">Why this clip</p>
+                    <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
+                      {activeClipRationale?.note || activeCandidate.rationale || "No clip-level rationale recorded. Ask the producer agent to create distinct candidate rationales on the next run."}
+                    </p>
+                  </div>
+                ) : null}
                 {reviewSession ? (
                   <div className="grid grid-cols-2 gap-2">
                     <Button
@@ -1370,7 +1401,7 @@ function AgentReviewWorkspace() {
                         ? `Saved ${approvalResult?.outputPath ?? plan.output.path}`
                         : reviewState === "failed"
                           ? approvalError ?? "Start the local bridge and retry the render."
-                          : "Review both clips, captions, and output settings before handing the plan to the renderer."}
+                          : "Work left to right: choose a candidate, adjust and save if needed, render preview, inspect it, then approve final or batch render."}
                   </p>
                   {previewUrl && reviewState !== "rendered" ? (
                     <a
@@ -1557,6 +1588,96 @@ function InspectorValue({ icon, label, value }: { icon?: React.ReactNode; label:
     <div className="flex items-center justify-between gap-3 text-[11px]">
       <span className="flex items-center gap-1.5 text-zinc-500 [&_svg]:size-3">{icon}{label}</span>
       <span className="max-w-36 truncate font-medium text-zinc-300" title={value}>{value}</span>
+    </div>
+  )
+}
+
+function ReviewWorkflowPanel({
+  activeCandidate,
+  planIsDirty,
+  hasCurrentPreview,
+  batchCandidateCount,
+  renderedCandidateCount,
+  latestBatch,
+  latestExportPackage,
+  preflightBlocks,
+  reviewState,
+}: {
+  activeCandidate: ReviewCandidate | undefined
+  planIsDirty: boolean
+  hasCurrentPreview: boolean
+  batchCandidateCount: number
+  renderedCandidateCount: number
+  latestBatch: RenderBatch | undefined
+  latestExportPackage: ReviewExportPackage | null
+  preflightBlocks: number
+  reviewState: ReviewState
+}) {
+  const candidateSelected = Boolean(activeCandidate)
+  const revisionSaved = candidateSelected && !planIsDirty
+  const rendered = renderedCandidateCount > 0 || activeCandidate?.outputExists || activeCandidate?.status === "rendered"
+  const batchActive = latestBatch?.status === "queued" || latestBatch?.status === "rendering"
+  const packaged = Boolean(latestExportPackage)
+  const activeCandidateTitle = activeCandidate?.title ?? "Selected candidate"
+  const steps = [
+    {
+      label: "1 Select",
+      done: candidateSelected,
+      active: !candidateSelected,
+      detail: candidateSelected ? activeCandidateTitle : "Pick one candidate to inspect. This does not render.",
+    },
+    {
+      label: "2 Save",
+      done: revisionSaved,
+      active: candidateSelected && planIsDirty,
+      detail: planIsDirty ? "Unsaved edits must become a new revision." : "Current revision is saved.",
+    },
+    {
+      label: "3 Preview",
+      done: hasCurrentPreview,
+      active: revisionSaved && !hasCurrentPreview,
+      detail: hasCurrentPreview ? "Preview matches this revision." : preflightBlocks > 0 ? `${preflightBlocks} blocker${preflightBlocks === 1 ? "" : "s"} before preview/final.` : "Render a fast preview before approval.",
+    },
+    {
+      label: "4 Approve",
+      done: Boolean(rendered),
+      active: hasCurrentPreview && !rendered,
+      detail: batchActive
+        ? "Batch render is running."
+        : batchCandidateCount > 0
+          ? `${batchCandidateCount} candidate${batchCandidateCount === 1 ? "" : "s"} staged for batch approval.`
+          : "Approve final for one candidate or add preview-ready candidates to batch.",
+    },
+    {
+      label: "5 Export",
+      done: packaged,
+      active: Boolean(rendered) && !packaged,
+      detail: packaged ? "Local package created." : rendered ? "Package rendered outputs for handoff." : "Available after render.",
+    },
+  ]
+
+  return (
+    <div className="mb-3 grid gap-2 rounded-lg border border-white/10 bg-black/20 p-3 lg:grid-cols-5">
+      {steps.map((step) => (
+        <div
+          key={step.label}
+          className={`rounded-md border p-2 ${
+            step.done
+              ? "border-emerald-400/25 bg-emerald-400/[0.06]"
+              : step.active
+                ? "border-amber-300/30 bg-amber-300/[0.08]"
+                : "border-white/8 bg-white/[0.025]"
+          }`}
+        >
+          <p className={`flex items-center gap-1.5 text-[10px] font-semibold ${
+            step.done ? "text-emerald-300" : step.active ? "text-amber-200" : "text-zinc-500"
+          }`}>
+            {step.done ? <Check className="size-3" /> : reviewState === "previewing" || reviewState === "rendering" ? <LoaderCircle className="size-3 animate-spin" /> : <span className="size-1.5 rounded-full bg-current" />}
+            {step.label}
+          </p>
+          <p className="mt-1 line-clamp-2 text-[9px] leading-relaxed text-zinc-500">{step.detail}</p>
+        </div>
+      ))}
     </div>
   )
 }
@@ -2074,4 +2195,21 @@ function humanizeId(value: string) {
     .filter(Boolean)
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join(" ")
+}
+
+function candidateStrategyLabel(value: ReviewCandidate["strategy"]) {
+  switch (value) {
+    case "distinct-moment":
+      return "Distinct moment"
+    case "narrative-segment":
+      return "One narrative split into segments"
+    case "social-variant":
+      return "Format/style variant"
+    case "archive-summary":
+      return "Context/archive summary"
+    case "manual":
+      return "Manual reviewer candidate"
+    default:
+      return "Agent-proposed candidate"
+  }
 }

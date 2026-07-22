@@ -36,6 +36,9 @@ describe("review sessions", () => {
     process.env.OPENCUT_AGENT_ROOT = root;
     const loaded = await loadReviewSession(join(root, "review-session.json"));
     expect(loaded.candidates[0]?.outputExists).toBe(false);
+    expect(loaded.candidates[0]?.strategy).toBe("unspecified");
+    expect(loaded.candidates[0]?.rationale).toBe("");
+    expect(loaded.candidates[0]?.clipRationales).toEqual([]);
     expect(loaded.renderBatches).toEqual([]);
     expect(loaded.exportPackages).toEqual([]);
     const registry = new ReviewSessionRegistry();
@@ -76,6 +79,28 @@ describe("review sessions", () => {
     await expect(loadReviewSession(join(root, "review-session.json"))).rejects.toThrow(
       "must render inside its own candidate directory"
     );
+  });
+
+  test("preserves candidate rationale and validates clip rationale references", async () => {
+    const root = await fixture();
+    process.env.OPENCUT_AGENT_ROOT = root;
+    const manifestPath = join(root, "review-session.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.candidates[0].strategy = "distinct-moment";
+    manifest.candidates[0].rationale = "This candidate isolates the cleanest explanation.";
+    manifest.candidates[0].clipRationales = [{ clipId: "clip", note: "Starts after the speaker's setup and ends before the tangent." }];
+    await writeFile(manifestPath, JSON.stringify(manifest));
+
+    const loaded = await loadReviewSession(manifestPath);
+    expect(loaded.candidates[0]).toMatchObject({
+      strategy: "distinct-moment",
+      rationale: "This candidate isolates the cleanest explanation.",
+      clipRationales: [{ clipId: "clip", note: "Starts after the speaker's setup and ends before the tangent." }],
+    });
+
+    manifest.candidates[0].clipRationales = [{ clipId: "missing", note: "Bad reference." }];
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await expect(loadReviewSession(manifestPath)).rejects.toThrow("rationale references unknown clip missing");
   });
 
   test("snapshots immutable plan revisions and records reviewer audit events", async () => {

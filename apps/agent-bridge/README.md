@@ -140,6 +140,13 @@ invalidates any older preview. Final approval atomically saves
 source/plan hashes, reviewer notes, and either the rendered or failed state.
 The bridge remains local-only and never uploads or publishes media.
 
+For every candidate, the review workspace can show strategy and rationale
+metadata: whether it is meant to be a distinct moment, a narrative segment from
+one longer clip, a social-format variant, an archive summary, or a manual
+reviewer option. Candidate cards also surface per-clip rationale when provided,
+so reviewers can understand why source ranges were chosen instead of guessing
+from timestamps alone.
+
 For v2 candidates, the review workspace identifies plan version, total layered
 clip count, overlay/audio track counts, transitions, title cards, caption
 treatment, ducking, and all video/audio/caption assets. The inspector can revise
@@ -183,6 +190,14 @@ video-workspace/
       "id": "concise",
       "title": "Concise answer",
       "summary": "Fast opening with one core idea",
+      "strategy": "distinct-moment",
+      "rationale": "This candidate isolates the cleanest self-contained answer rather than splitting one longer clip into hook/body/close.",
+      "clipRationales": [
+        {
+          "clipId": "core-answer",
+          "note": "Starts after the setup and ends before the speaker changes topic."
+        }
+      ],
       "planPath": "candidates/concise/edit-plan.json",
       "status": "ready-for-review",
       "revision": 1
@@ -212,10 +227,12 @@ multi-gigabyte source file again.
 
 Candidate selection, preview rendering, batch inclusion, and final approval are
 deliberately separate actions. Selecting a card cannot start FFmpeg. The visible
-**Render preview** action produces a fast revision-specific file; **Approve
-final** stays locked until that exact revision has a preview. Preview-approved
-candidates can also be added to a batch queue and rendered sequentially through
-one explicit **Approve batch** action. Batch item state is persisted as queued,
+five-step workflow explains the current state: **Select**, **Save**,
+**Preview**, **Approve**, and **Export**. The **Render preview** action produces
+a fast revision-specific file; **Approve final** stays locked until that exact
+revision has a preview. Preview-approved candidates can also be added to a batch
+queue and rendered sequentially through one explicit **Approve batch** action.
+Batch item state is persisted as queued,
 rendering, rendered, or failed so the reviewer can poll progress and retry only
 failed candidates. Backend preflight checks are enforced for preview, final,
 batch, and export actions, so the UI status is not merely cosmetic. The final
@@ -243,3 +260,7 @@ The HTTP surface for this workflow is:
 
 Session IDs are process-local: restarting the bridge creates a new short URL,
 while the manifest's selected, batch, and rendered state remains on disk.
+
+See [USER_GUIDE.md](USER_GUIDE.md) for a concise reviewer workflow and the
+current product gaps around WYSIWYG layer editing and transcription provider
+selection.
