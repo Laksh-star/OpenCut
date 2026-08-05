@@ -6,9 +6,9 @@
     "#/*": "./src/*"
   },
   "scripts": {
-    "dev": "vite dev --port 5173",
-    "build": "vite build",
-    "preview": "vite preview",
+    "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite dev --port 5173",
+    "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite build",
+    "preview": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite preview",
     "test": "vitest run",
     "deploy": "bun run build && wrangler deploy"
   },
