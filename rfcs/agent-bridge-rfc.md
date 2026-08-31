@@ -90,6 +90,22 @@ A later contract can extend this with:
 The contract should be versioned so older plans can be upgraded without losing
 the primary A-roll timeline.
 
+Plans should describe the desired state of a scoped region, derived from
+declared sources, rather than a list of mutations against whatever the timeline
+happens to contain at application time. This makes plans safer to retry, easier
+to diff in a review UI, and less fragile when captions, overlays, or other
+generated regions are restyled.
+
+For generated regions such as captions, the bridge should preserve enough source
+data to rebuild the region deterministically. For example, a caption restyle
+should rebuild from the declared text and timing source instead of mutating a
+set of already-styled visual elements in place.
+
+Plan application should be atomic. A plan should either apply fully or fail
+without leaving a partially modified project. When a plan is applied, OpenCut
+should record it as a single undoable editor step so the undo stack remains the
+last safety net underneath the approval gates.
+
 ## Review-session model
 
 Agents should create candidates, not final outputs. A review session can contain:
@@ -107,6 +123,11 @@ Agents should create candidates, not final outputs. A review session can contain
 The browser URL should use an opaque session ID rather than embedding a full
 plan in the query string.
 
+Source assets should be authorized per review session. Agents should receive
+opaque, session-scoped asset references instead of ambient filesystem access.
+That lets the user choose which local files are in scope while keeping the
+underlying media local.
+
 ## Approval gates
 
 Recommended gates:
@@ -119,6 +140,17 @@ Recommended gates:
 
 Final rendering should be blocked if the current revision has not successfully
 previewed.
+
+Approval gates should also define timeout and parked-state behavior. If the
+reviewer does not respond, the agent should be able to park the run without
+treating the pause as an error. The parked state should be visible in the review
+session, and each gate should specify whether it expires with default deny or
+waits indefinitely for an asynchronous human decision.
+
+The bridge should expose a structured blocked signal such as
+`report_blocked(reason)`. This gives agents an honest way to say that no safe
+plan can be produced, instead of emitting a weak or misleading plan just to keep
+the workflow moving.
 
 ## Local safety boundary
 
