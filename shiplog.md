@@ -101,3 +101,32 @@ historical runtime validation is only reported where separately recorded.
   are independent directories. The disposable integration checkout was removed
   after promotion; its branch and commits remain available in Git.
 - Full evidence and remaining limits: [verification/2026-10-26.md](verification/2026-10-26.md).
+
+## 2026-10-26 — Review workflow usability
+
+- Implemented Choose clips → Edit → Review & export with concise clip cards,
+  duration/aspect ratio, expandable rationale, and one primary next action.
+- Put video and transcript together on desktop, with explicit Source and Edited
+  preview modes. Added a visible target-duration control and plain Save changes
+  labels. Caption corrections remain separately saved.
+- Moved layers, audio, providers, timing, project files and history under Advanced;
+  moved cleanup/commands/protection/restore under More editing tools. Batch render
+  is a secondary review task; packaging appears after final renders exist.
+- Preserved preview/final approval separation, immutable revisions, local media,
+  existing production controls and standalone plan import. Unsaved edits block
+  switching clips and batch/final approval. Added readiness retry and fixed the
+  loading-view hydration mismatch and empty-workspace sample-caption request.
+- Tested: 21 web tests and 59 bridge tests; web TypeScript and client/SSR builds.
+  Browser checks exercised proposal → save → preview → caption correction → new
+  preview → separate final approval → export on generated footage. FFprobe verified
+  the 6 s final output with H.264, AAC and selectable subtitles. Desktop/mobile
+  layouts were inspected; mobile Advanced remained accessible without page overflow.
+  A simulated readiness failure recovered through Retry checks; unsaved timing
+  blocked both final and batch actions.
+- Existing podcast project preserved: two existing finals, third unrendered clip,
+  all revision 1, selected concise-core, and its 15 events unchanged. No podcast
+  render or external transcription requested during this pass.
+- Updated the user guide. Evidence and limits:
+  [verification/2026-10-26-review-ux.md](verification/2026-10-26-review-ux.md).
+- Delivered on the existing fork branch `codex/agent-bridge-mvp`; this is a local
+  UI update, not a public release or new native-editor feature set.

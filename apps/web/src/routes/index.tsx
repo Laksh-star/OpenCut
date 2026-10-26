@@ -1,10 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router"
 import {
+  ArrowRight,
   ArrowDown,
   ArrowUp,
   Captions,
   Check,
-  ChevronDown,
   CircleAlert,
   Clock3,
   Download,
@@ -14,7 +14,6 @@ import {
   Eye,
   LoaderCircle,
   Layers3,
-  Maximize2,
   Music2,
   Pause,
   Play,
@@ -24,12 +23,12 @@ import {
   SkipForward,
   Sparkles,
   MessageSquareText,
-  Upload,
   WandSparkles,
 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { Button } from "#/components/ui/button.tsx"
+import { ReviewSteps, CandidateChoices, type ReviewStage } from "#/components/review-workflow.tsx"
 import { TranscriptEditor } from "#/components/transcript-editor.tsx"
 import { editorialSegments } from "../../../agent-bridge/src/editorial.ts"
 import { parseCaptionFile, type CaptionCue } from "#/lib/captions.ts"
@@ -164,6 +163,12 @@ const bridgeUrl = (
 ).replace(/\/$/, "")
 
 function AgentReviewWorkspace() {
+  const [hasImportedPlan, setHasImportedPlan] = useState(false)
+  const [clientReady, setClientReady] = useState(false)
+  const [stage, setStage] = useState<ReviewStage>("choose")
+  const [previewMode, setPreviewMode] = useState<"source" | "edited">("source")
+  const [showLayout, setShowLayout] = useState(false)
+  const [selectingCandidate, setSelectingCandidate] = useState(false)
   const [plan, setPlan] = useState<EditPlan>(sampleEditPlan)
   const [selectedClipId, setSelectedClipId] = useState(
     sampleEditPlan.timeline.clips[0]?.id ?? "",
@@ -179,6 +184,7 @@ function AgentReviewWorkspace() {
   const [batchCandidateIds, setBatchCandidateIds] = useState<string[]>([])
   const [batchRendering, setBatchRendering] = useState(false)
   const [batchError, setBatchError] = useState<string | null>(null)
+  const [preflightAttempt, setPreflightAttempt] = useState(0)
   const [preflight, setPreflight] = useState<ReviewSessionPreflight | null>(null)
   const [preflightLoading, setPreflightLoading] = useState(false)
   const [preflightError, setPreflightError] = useState<string | null>(null)
@@ -216,6 +222,13 @@ function AgentReviewWorkspace() {
   const planInputRef = useRef<HTMLInputElement>(null)
   const videoInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
+
+  useEffect(() => { setClientReady(true) }, [])
+
+  useEffect(() => {
+    videoRef.current?.pause()
+    setIsPlaying(false)
+  }, [stage, previewMode])
 
   const segments = useMemo(() => buildTimelineSegments(plan), [plan])
   const totalDuration = useMemo(() => getTimelineDuration(plan), [plan])
@@ -324,7 +337,7 @@ function AgentReviewWorkspace() {
         if (!controller.signal.aborted) setPreflightLoading(false)
       })
     return () => controller.abort()
-  }, [activeCandidate?.id, activeCandidate?.revision, captionDraftDirty, hasCurrentPreview, planIsDirty, reviewSession, sessionId])
+  }, [activeCandidate?.id, activeCandidate?.revision, captionDraftDirty, hasCurrentPreview, planIsDirty, reviewSession, sessionId, preflightAttempt])
 
   useEffect(() => {
     return () => {
@@ -370,6 +383,8 @@ function AgentReviewWorkspace() {
     try {
       const importedPlan = parseEditPlan(JSON.parse(encodedPlan))
       setPlan(importedPlan)
+      setHasImportedPlan(true)
+      setStage("edit")
       setSelectedClipId(importedPlan.timeline.clips[0]?.id ?? "")
       setCurrentSourceTime(importedPlan.timeline.clips[0]?.sourceStart ?? 0)
       setReviewState("review")
@@ -383,7 +398,11 @@ function AgentReviewWorkspace() {
     }
   }, [])
 
-  function applyReviewCandidate(session: ReviewSession, candidate: ReviewCandidate) {
+  function applyReviewCandidate(
+    session: ReviewSession,
+    candidate: ReviewCandidate,
+  ) {
+    setPreviewMode("source")
     setActiveReviewCandidateId(candidate.id)
     setPlan(candidate.plan)
     setSelectedClipId(candidate.plan.timeline.clips[0]?.id ?? "")
@@ -413,30 +432,63 @@ function AgentReviewWorkspace() {
     setPlanError(null)
     setRevisionNote("")
     const asset = mediaAssetForPlan(session, candidate.plan)
-    const sessionId = new URLSearchParams(window.location.search).get("session")
+    const sessionId = new URLSearchParams(window.location.search).get(
+      "session",
+    )
     if (asset && sessionId) {
-      setVideoUrl(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(asset.id)}`)
+      setVideoUrl(
+        `${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(asset.id)}`,
+      )
       setVideoName(asset.label)
     }
   }
 
   async function selectReviewCandidate(candidateId: string) {
-    if (!reviewSession) return
+    if (
+      !reviewSession ||
+      interactionLocked ||
+      selectingCandidate ||
+      planIsDirty ||
+      captionDraftDirty
+    )
+      return
+    setSelectingCandidate(true)
     setSessionError(null)
     try {
-      const sessionId = new URLSearchParams(window.location.search).get("session")
-      const response = await fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId ?? "")}/select`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ candidateId }),
-      })
-      const payload = (await response.json()) as ReviewSession & { error?: string }
-      if (!response.ok) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+      const sessionId = new URLSearchParams(window.location.search).get(
+        "session",
+      )
+      const response = await fetch(
+        `${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId ?? "")}/select`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ candidateId }),
+        },
+      )
+      const payload = (await response.json()) as ReviewSession & {
+        error?: string
+      }
+      if (!response.ok)
+        throw new Error(
+          payload.error ?? `Local bridge returned ${response.status}`,
+        )
       setReviewSession(payload)
       const candidate = candidateForSelection(payload)
-      if (candidate) applyReviewCandidate(payload, candidate)
+      if (candidate) {
+        applyReviewCandidate(payload, candidate)
+        const finalReady =
+          candidate.outputExists || candidate.status === "rendered"
+        setStage(finalReady ? "review" : "edit")
+        if (finalReady && candidateHasCurrentPreview(candidate))
+          setPreviewMode("edited")
+      }
     } catch (error) {
-      setSessionError(error instanceof Error ? error.message : "Could not select candidate")
+      setSessionError(
+        error instanceof Error ? error.message : "Could not select candidate",
+      )
+    } finally {
+      setSelectingCandidate(false)
     }
   }
 
@@ -480,29 +532,48 @@ function AgentReviewWorkspace() {
   }
 
   async function renderPreview() {
-    if (!reviewSession || !activeCandidate || planIsDirty || captionDraftDirty || interactionLocked) return
+    if (
+      !reviewSession ||
+      !activeCandidate ||
+      planIsDirty ||
+      captionDraftDirty ||
+      interactionLocked
+    )
+      return
     setReviewState("previewing")
     setApprovalError(null)
     try {
-      const response = await fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId ?? "")}/render-preview`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          candidateId: activeCandidate.id,
-          approvalToken: reviewSession.approvalToken,
-          renderLimitSeconds: 60,
-        }),
-      })
-      const payload = (await response.json()) as ApprovalResult & { error?: string; session?: ReviewSession }
-      if (!response.ok || !payload.session) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
+      const response = await fetch(
+        `${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId ?? "")}/render-preview`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            candidateId: activeCandidate.id,
+            approvalToken: reviewSession.approvalToken,
+            renderLimitSeconds: 60,
+          }),
+        },
+      )
+      const payload = (await response.json()) as ApprovalResult & {
+        error?: string
+        session?: ReviewSession
+      }
+      if (!response.ok || !payload.session)
+        throw new Error(
+          payload.error ?? `Local bridge returned ${response.status}`,
+        )
       setReviewSession(payload.session)
       const candidate = candidateForSelection(payload.session)
       if (candidate) applyReviewCandidate(payload.session, candidate)
       setReviewState("preview-ready")
+      setPreviewMode("edited")
       setApprovalResult(payload)
     } catch (error) {
       setReviewState("failed")
-      setApprovalError(error instanceof Error ? error.message : "Could not render the preview")
+      setApprovalError(
+        error instanceof Error ? error.message : "Could not render the preview",
+      )
     }
   }
 
@@ -617,7 +688,7 @@ function AgentReviewWorkspace() {
     setCaptionDraftCues([])
     setCaptionsEnabled(false)
     setCaptionsError(null)
-    if (!captionsPath || (sessionId && !activeReviewCandidateId)) {
+    if ((!hasImportedPlan && !reviewSession) || !captionsPath || (sessionId && !activeReviewCandidateId)) {
       setCaptionsLoading(false)
       return () => controller.abort()
     }
@@ -650,7 +721,7 @@ function AgentReviewWorkspace() {
         if (!controller.signal.aborted) setCaptionsLoading(false)
       })
     return () => controller.abort()
-  }, [activeReviewCandidateId, activeCandidate?.revision, captionsPath, sessionId])
+  }, [activeReviewCandidateId, activeCandidate?.revision, captionsPath, sessionId, hasImportedPlan])
 
   async function handlePlanFile(file: File | undefined) {
     if (!file) return
@@ -658,6 +729,8 @@ function AgentReviewWorkspace() {
     try {
       const importedPlan = parseEditPlan(JSON.parse(await file.text()))
       setPlan(importedPlan)
+      setHasImportedPlan(true)
+      setStage("edit")
       setSelectedClipId(importedPlan.timeline.clips[0]?.id ?? "")
       resetProductionSelections(importedPlan)
       setCurrentSourceTime(importedPlan.timeline.clips[0]?.sourceStart ?? 0)
@@ -711,7 +784,7 @@ function AgentReviewWorkspace() {
 
   function toggleBatchCandidate(candidateId: string) {
     const candidate = reviewSession?.candidates.find((entry) => entry.id === candidateId)
-    if (!candidate || !canBatchRenderCandidate(candidate) || batchRendering || latestBatchActive) return
+    if (!candidate || !canBatchRenderCandidate(candidate) || interactionLocked || planIsDirty || captionDraftDirty) return
     setBatchCandidateIds((ids) => ids.includes(candidateId)
       ? ids.filter((id) => id !== candidateId)
       : [...ids, candidateId])
@@ -743,7 +816,7 @@ function AgentReviewWorkspace() {
   }
 
   async function approveBatch() {
-    if (!reviewSession || batchCandidateIds.length === 0 || batchRendering || latestBatchActive) return
+    if (!reviewSession || batchCandidateIds.length === 0 || interactionLocked || planIsDirty || captionDraftDirty) return
     setBatchRendering(true)
     setBatchError(null)
     setApprovalResult(null)
@@ -820,18 +893,31 @@ function AgentReviewWorkspace() {
   }
 
   function seekToTranscriptTime(seconds: number) {
-    const segment = editorialSegments(plan).find((segment) => seconds >= segment.start && seconds < segment.end)
+    setPreviewMode("source")
+    const segment = editorialSegments(plan).find(
+      (segment) => seconds >= segment.start && seconds < segment.end,
+    )
     if (!segment) return
-    const sourceTime = segment.clip.sourceStart + (seconds - segment.start) * segment.clip.speed
+    const sourceTime =
+      segment.clip.sourceStart + (seconds - segment.start) * segment.clip.speed
     setSelectedClipId(segment.clip.id)
     setCurrentSourceTime(sourceTime)
-    const asset = plan.assets.find((asset) => asset.id === segment.clip.assetId)
-    const source = reviewSession?.sourceAssets.find((source) => source.id === asset?.id || source.path === asset?.path)
+    const asset = plan.assets.find(
+      (asset) => asset.id === segment.clip.assetId,
+    )
+    const source = reviewSession?.sourceAssets.find(
+      (source) => source.id === asset?.id || source.path === asset?.path,
+    )
     if (source && sessionId) {
-      setVideoUrl(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(source.id)}`)
+      setVideoUrl(
+        `${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(source.id)}`,
+      )
       setVideoName(source.label)
     }
-    if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = sourceTime }
+    if (videoRef.current) {
+      videoRef.current.pause()
+      videoRef.current.currentTime = sourceTime
+    }
     setIsPlaying(false)
   }
 
@@ -949,7 +1035,7 @@ function AgentReviewWorkspace() {
   }
 
   return (
-    <main className="dark min-h-screen bg-[#0c0d0f] text-zinc-100 selection:bg-amber-300/30">
+    <main className="dark min-h-screen bg-[#0c0d0f] text-zinc-100 selection:bg-amber-300/30 [&_h1]:font-sans [&_h2]:font-sans [&_h3]:font-sans">
       <input
         ref={planInputRef}
         className="hidden"
@@ -973,865 +1059,1201 @@ function AgentReviewWorkspace() {
         }}
       />
 
-      <header className="flex h-14 items-center justify-between border-b border-white/10 bg-[#111214] px-4">
-        <div className="flex items-center gap-3">
-          <div className="grid size-8 place-items-center rounded-lg bg-amber-300 text-zinc-950 shadow-[0_0_24px_rgba(252,211,77,0.16)]">
-            <Film className="size-4" strokeWidth={2.4} />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold tracking-tight">OpenCut</span>
-              <span className="rounded-full border border-amber-300/25 bg-amber-300/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.18em] text-amber-200">
-                Agent review
-              </span>
+      <header className="border-b border-white/10 bg-[#111214] px-5 py-4 sm:px-8">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-amber-300 text-zinc-950">
+              <Film className="size-5" />
             </div>
-            <p className="mt-0.5 text-[10px] text-zinc-500">Native edit-plan workspace · local first</p>
+            <div className="min-w-0">
+              <p className="text-xs text-zinc-400">OpenCut · Clip review</p>
+              <h1 className="truncate text-base font-semibold sm:text-lg">
+                {reviewSession?.title ?? (hasImportedPlan ? plan.project.name : "Review workspace")}
+              </h1>
+            </div>
           </div>
-        </div>
-
-        <div className="hidden items-center gap-2 md:flex">
-          <button className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-zinc-400 hover:bg-white/5 hover:text-zinc-200">
-            {plan.project.name}
-            <ChevronDown className="size-3" />
-          </button>
-          <span className="h-5 w-px bg-white/10" />
           <span
-            className={`flex items-center gap-1.5 text-[11px] ${
-              bridgeOnline === true
-                ? "text-emerald-300"
-                : bridgeOnline === false
-                  ? "text-red-300"
-                  : "text-amber-200"
-            }`}
+            role="status"
+            className={`shrink-0 text-xs ${bridgeOnline === false ? "text-red-300" : "text-zinc-400"}`}
           >
-            <span
-              className={`size-1.5 rounded-full ${
-                bridgeOnline === true
-                  ? "bg-emerald-400"
-                  : bridgeOnline === false
-                    ? "bg-red-400"
-                    : "animate-pulse bg-amber-300"
-              }`}
-            />
             {bridgeOnline === true
-              ? "Bridge online"
+              ? "Local workspace"
               : bridgeOnline === false
-                ? "Bridge offline"
-                : "Checking bridge"}
+                ? "Local service offline"
+                : "Connecting…"}
           </span>
         </div>
-
-        <div className="flex items-center gap-2">
-          {!reviewSession ? (
-            <Button variant="ghost" size="lg" onClick={() => planInputRef.current?.click()}>
-              <Upload data-icon="inline-start" />
-              Import plan
-            </Button>
-          ) : null}
-          {reviewSession ? (
-            <Button
-              variant="outline"
-              size="lg"
-              disabled={
-                !reviewSession.selectedCandidateId ||
-                planIsDirty ||
-                captionDraftDirty ||
-                interactionLocked ||
-                reviewState === "rendered" ||
-                (!hasCurrentPreview && activePreflightBlocks > 0)
-              }
-              onClick={() => void renderPreview()}
-              title={planIsDirty ? "Save the revision before rendering its preview" : "Render a fast local preview"}
-            >
-              {reviewState === "previewing" ? <LoaderCircle className="animate-spin" /> : <Eye />}
-              {reviewState === "previewing" ? "Previewing…" : hasCurrentPreview ? "Refresh preview" : "Render preview"}
-            </Button>
-          ) : null}
-          <Button
-            size="lg"
-            className={reviewState === "rendered"
-              ? "bg-emerald-400 text-emerald-950 hover:bg-emerald-300"
-              : reviewState === "failed"
-                ? "bg-red-300 text-red-950 hover:bg-red-200"
-                : "bg-amber-300 text-zinc-950 hover:bg-amber-200"}
-            disabled={
-              reviewState === "saving" ||
-              reviewState === "previewing" ||
-              reviewState === "rendering" ||
-              batchRendering ||
-              latestBatchActive ||
-              reviewState === "rendered" ||
-              Boolean(reviewSession && (!reviewSession.selectedCandidateId || planIsDirty || captionDraftDirty || !hasCurrentPreview))
-              || Boolean(reviewSession && hasCurrentPreview && activePreflightBlocks > 0)
-            }
-            onClick={() => void approveAndRender()}
-          >
-            {reviewState === "rendering" ? (
-              <LoaderCircle className="animate-spin" />
-            ) : reviewState === "rendered" ? (
-              <Check />
-            ) : reviewState === "failed" ? (
-              <RotateCcw />
-            ) : (
-              <Sparkles />
-            )}
-            {reviewState === "rendering"
-              ? "Rendering…"
-              : reviewState === "rendered"
-                ? "Rendered"
-                : reviewState === "failed"
-                  ? "Retry render"
-                  : "Approve final"}
-          </Button>
-        </div>
       </header>
-
-      {reviewSession ? (
-        <section className="border-b border-white/10 bg-[#111214] px-4 py-3">
-          <div className="mb-2 flex items-center justify-between gap-3">
+      <div className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-8">
+        <ReviewSteps
+          stage={stage}
+          onChange={(next) => {
+            setStage(next)
+            setPreviewMode(
+              next === "review" &&
+                hasCurrentPreview &&
+                !planIsDirty &&
+                !captionDraftDirty
+                ? "edited"
+                : "source",
+            )
+          }}
+          hasSelection={reviewSession ? Boolean(reviewSession.selectedCandidateId) : hasImportedPlan}
+          locked={interactionLocked || selectingCandidate}
+          dirty={planIsDirty || captionDraftDirty}
+        />
+        {sessionError || approvalError || planError ? (
+          <p
+            role="alert"
+            className="rounded-lg border border-red-300/25 bg-red-300/10 p-4 text-sm text-red-200"
+          >
+            {sessionError || approvalError || planError}
+          </p>
+        ) : null}
+        {stage === "choose" ? (
+          <section aria-label="Choose clips" className="space-y-5">
             <div>
-              <p className="text-xs font-medium text-zinc-200">{reviewSession.title}</p>
-              <p className="mt-0.5 text-[10px] text-zinc-500">
-                Compare the agent's candidates first. Selection, preview, final render, batch render, and export are separate choices.
+              <h2 className="text-2xl font-semibold">Find your next clip</h2>
+              <p className="mt-2 text-sm text-zinc-400">
+                Choose one to watch and edit. Each clip keeps its own changes
+                and exports.
               </p>
             </div>
-            <span className="text-[10px] text-zinc-500">{reviewSession.candidates.length} candidates</span>
-          </div>
-          <ReviewWorkflowPanel
-            activeCandidate={activeCandidate}
-            planIsDirty={planIsDirty}
-            captionDraftDirty={captionDraftDirty}
-            hasCurrentPreview={hasCurrentPreview}
-            batchCandidateCount={batchCandidateIds.length}
-            renderedCandidateCount={renderedCandidateIds.length}
-            latestBatch={latestBatch}
-            latestExportPackage={latestExportPackage}
-            preflightBlocks={activePreflightBlocks}
-            reviewState={reviewState}
-          />
-          <div className="grid gap-2 md:grid-cols-3">
-            {reviewSession.candidates.map((candidate) => {
-              const selected = candidate.id === reviewSession.selectedCandidateId
-              const rendered = candidate.status === "rendered" || candidate.outputExists
-              const previewReady = candidateHasCurrentPreview(candidate)
-              const queued = candidate.status === "queued"
-              const rendering = candidate.status === "rendering"
-              const failed = candidate.status === "failed"
-              const batchSelected = batchCandidateIds.includes(candidate.id)
-              const canBatchRender = canBatchRenderCandidate(candidate) && !batchRendering && !latestBatchActive
-              const candidateTracks = getPlanTrackCounts(candidate.plan)
-              return (
-                <div
-                  key={candidate.id}
-                  className={`rounded-lg border p-3 text-left transition ${selected ? "border-amber-300/70 bg-amber-300/10" : "border-white/10 bg-white/[0.025] hover:border-white/25"}`}
-                >
-                  <button
-                    className="block w-full text-left"
-                    onClick={() => void selectReviewCandidate(candidate.id)}
-                    aria-pressed={selected}
+            {reviewSession ? (
+              <CandidateChoices
+                candidates={reviewSession.candidates}
+                selectedId={reviewSession.selectedCandidateId}
+                disabled={
+                  interactionLocked ||
+                  selectingCandidate ||
+                  planIsDirty ||
+                  captionDraftDirty
+                }
+                onSelect={(id) => void selectReviewCandidate(id)}
+              />
+            ) : (
+              <div className="rounded-xl border border-white/10 p-6 text-sm text-zinc-400">
+                <p>
+                  {sessionError
+                    ? "Reopen this project using its local review launcher."
+                    : !clientReady || sessionId
+                    ? "Loading your review project…"
+                    : "Open a review project link, or import an edit plan to get started."}
+                </p>
+                {clientReady && !sessionId ? (
+                  <Button
+                    className="mt-4"
+                    variant="outline"
+                    onClick={() => {
+                      planInputRef.current?.click()
+                    }}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-xs font-medium text-zinc-100">{candidate.title}</span>
-                      <span className={`rounded-full px-2 py-0.5 text-[9px] ${
-                        rendered ? "bg-emerald-400/15 text-emerald-300"
-                          : rendering || queued ? "bg-amber-300/15 text-amber-200"
-                            : failed ? "bg-red-400/15 text-red-300"
-                              : previewReady ? "bg-sky-400/15 text-sky-300"
-                                : selected ? "bg-amber-300/15 text-amber-200"
-                                  : "bg-white/5 text-zinc-500"
-                      }`}>
-                        {rendered ? "Final" : rendering ? "Rendering" : queued ? "Queued" : failed ? "Failed" : previewReady ? "Preview ready" : selected ? "Selected" : "Ready"}
+                    Import edit plan
+                  </Button>
+                ) : null}
+              </div>
+            )}
+            {selectingCandidate ? (
+              <p role="status" className="text-sm text-amber-200">
+                Opening clip…
+              </p>
+            ) : null}
+          </section>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <p className="text-xs text-amber-200">
+                  {stage === "edit" ? "Edit clip" : "Review & export"}
+                </p>
+                <h2 className="mt-1 text-xl font-semibold sm:text-2xl">
+                  {activeCandidate?.title ?? plan.project.name}
+                </h2>
+                <p className="mt-2 text-sm text-zinc-400">
+                  {stage === "edit"
+                    ? "Watch the source. Select transcript passages to keep or remove."
+                    : "Watch the edited preview, then approve the final video."}
+                </p>
+              </div>
+              {stage === "edit" ? (
+                <Button
+                  className="min-h-11 bg-amber-300 text-zinc-950 hover:bg-amber-200"
+                  disabled={interactionLocked}
+                  onClick={() => {
+                    setStage("review")
+                    setPreviewMode(
+                      hasCurrentPreview && !planIsDirty && !captionDraftDirty
+                        ? "edited"
+                        : "source",
+                    )
+                  }}
+                >
+                  Continue to review <ArrowRight />
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  disabled={interactionLocked}
+                  onClick={() => {
+                    setStage("edit")
+                    setPreviewMode("source")
+                  }}
+                >
+                  Back to editing
+                </Button>
+              )}
+            </div>
+            {planIsDirty || captionDraftDirty ? (
+              <div
+                role="status"
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300/30 bg-amber-300/5 p-4"
+              >
+                <p className="text-sm text-amber-100">
+                  Unsaved {captionDraftDirty ? "caption" : "clip"} changes. Save
+                  them before previewing or switching clips.
+                </p>
+                {planIsDirty ? (
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      disabled={interactionLocked}
+                      onClick={() => {
+                        if (activeCandidate && reviewSession)
+                          applyReviewCandidate(reviewSession, activeCandidate)
+                      }}
+                    >
+                      Discard changes
+                    </Button>
+                    <Button
+                      disabled={interactionLocked}
+                      onClick={() => void saveRevision()}
+                    >
+                      {reviewState === "saving" ? "Saving…" : "Save changes"}
+                    </Button>
+                  </div>
+                ) : (
+                  <Button variant="outline" onClick={() => setStage("edit")}>
+                    Open caption corrections
+                  </Button>
+                )}
+              </div>
+            ) : null}
+            <div
+              className={`grid items-start gap-5 ${stage === "edit" ? "lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,1fr)]" : "lg:grid-cols-[minmax(0,1.6fr)_minmax(300px,1fr)]"}`}
+            >
+              <section
+                aria-label="Video monitor"
+                className="min-w-0 overflow-hidden rounded-xl border border-white/10 bg-[#08090a]"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 p-3">
+                  <div
+                    className="flex gap-1 rounded-lg bg-white/5 p-1"
+                    aria-label="Video view"
+                  >
+                    <button
+                      className={`rounded-md px-3 py-2 text-sm ${previewMode === "source" ? "bg-white/15 text-white" : "text-zinc-400"}`}
+                      aria-pressed={previewMode === "source"}
+                      onClick={() => setPreviewMode("source")}
+                    >
+                      Source
+                    </button>
+                    <button
+                      className={`rounded-md px-3 py-2 text-sm disabled:opacity-35 ${previewMode === "edited" ? "bg-white/15 text-white" : "text-zinc-400"}`}
+                      aria-pressed={previewMode === "edited"}
+                      disabled={!previewUrl || planIsDirty || captionDraftDirty}
+                      onClick={() => setPreviewMode("edited")}
+                    >
+                      Edited preview
+                    </button>
+                  </div>
+                  <span className="text-xs text-zinc-400">
+                    {plan.project.width} × {plan.project.height} ·{" "}
+                    {totalDuration.toFixed(1)}s
+                  </span>
+                </div>
+                <div
+                  className="relative w-full bg-black"
+                  style={{
+                    aspectRatio: `${plan.project.width} / ${plan.project.height}`,
+                  }}
+                >
+                  {previewMode === "edited" &&
+                  previewUrl &&
+                  !planIsDirty &&
+                  !captionDraftDirty ? (
+                    <video
+                      key={previewUrl}
+                      controls
+                      className="size-full object-contain"
+                      src={previewUrl}
+                      aria-label="Edited preview video"
+                    />
+                  ) : videoUrl ? (
+                    <video
+                      ref={videoRef}
+                      className="size-full object-contain"
+                      src={videoUrl}
+                      aria-label="Source video"
+                      onLoadedMetadata={() =>
+                        seekToSelectionTime(selectionProgressSeconds)
+                      }
+                      onTimeUpdate={handleSelectionTimeUpdate}
+                      onPause={() => setIsPlaying(false)}
+                      onPlay={() => setIsPlaying(true)}
+                    />
+                  ) : (
+                    <div className="grid h-full place-content-center gap-3 p-6 text-center text-sm text-zinc-400">
+                      <p>
+                        Attach the original video to watch the proposed cuts.
+                      </p>
+                      <Button
+                        variant="outline"
+                        onClick={() => videoInputRef.current?.click()}
+                      >
+                        Attach source video
+                      </Button>
+                    </div>
+                  )}
+                  {previewMode === "source" && showLayout ? (
+                    <>
+                      <VisualDesignCanvas
+                        plan={plan}
+                        currentTimelineTime={currentTimelineTime}
+                        activeCaption={activeCaption}
+                        captionsEnabled={captionsEnabled}
+                        selectedSegment={selectedSegment}
+                        selectedOverlayClipId={selectedOverlayClipId}
+                        selectedTitleCardId={selectedTitleCardId}
+                        disabled={!canEditPlan}
+                        onSelectOverlayClip={setSelectedOverlayClipId}
+                        onSelectTitleCard={setSelectedTitleCardId}
+                        onApply={reviseProductionPlan}
+                      />
+                    </>
+                  ) : null}
+                </div>
+                {previewMode === "source" ? (
+                  <>
+                    <div className="flex min-h-16 flex-wrap items-center justify-center gap-3 border-t border-white/10 bg-[#0e0f11] px-4 py-3 sm:flex-nowrap">
+                      <button
+                        className="grid size-7 place-items-center rounded-full border border-white/10 text-zinc-300 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-30"
+                        disabled={!videoUrl}
+                        onClick={() => seekBy(-5)}
+                        aria-label="Seek backward 5 seconds"
+                      >
+                        <SkipBack className="size-3.5" />
+                      </button>
+                      <button
+                        className="grid size-7 place-items-center rounded-full bg-zinc-100 text-zinc-950 disabled:cursor-not-allowed disabled:opacity-30"
+                        disabled={!videoUrl}
+                        onClick={() => void toggleSelectionPlayback()}
+                        aria-label={
+                          isPlaying ? "Pause selection" : "Play selection"
+                        }
+                      >
+                        {isPlaying ? (
+                          <Pause className="size-3.5 fill-current" />
+                        ) : (
+                          <Play className="ml-0.5 size-3.5 fill-current" />
+                        )}
+                      </button>
+                      <button
+                        className="grid size-7 place-items-center rounded-full border border-white/10 text-zinc-300 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-30"
+                        disabled={!videoUrl}
+                        onClick={() => seekBy(5)}
+                        aria-label="Seek forward 5 seconds"
+                      >
+                        <SkipForward className="size-3.5" />
+                      </button>
+                      <input
+                        className="order-last h-1.5 min-w-16 basis-full cursor-pointer accent-amber-300 disabled:cursor-not-allowed disabled:opacity-30 sm:order-none sm:flex-1 sm:basis-auto md:max-w-md"
+                        type="range"
+                        min={0}
+                        max={selectedSegment?.durationSeconds ?? 0}
+                        step={0.1}
+                        value={selectionProgressSeconds}
+                        disabled={!videoUrl || !selectedSegment}
+                        onChange={(event) =>
+                          seekToSelectionTime(Number(event.target.value))
+                        }
+                        aria-label="Selection position"
+                      />
+                      <span className="min-w-28 text-right font-mono text-[11px] text-zinc-400">
+                        {formatTimecode(currentTimelineTime)}
+                        <span className="text-zinc-700"> / </span>
+                        {formatTimecode(totalDuration)}
                       </span>
                     </div>
-                    <p className="mt-1.5 line-clamp-2 text-[10px] leading-relaxed text-zinc-500">{candidate.summary || "Agent-proposed edit"}</p>
-                    <div className="mt-2 rounded-md border border-white/8 bg-black/20 p-2">
-                      <p className="text-[8px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Candidate intent</p>
-                      <p className="mt-1 text-[10px] font-medium text-zinc-300">{candidateStrategyLabel(candidate.strategy)}</p>
-                      <p className="mt-1 line-clamp-2 text-[9px] leading-relaxed text-zinc-500">
-                        {candidate.rationale || "No rationale recorded yet. Future generated sessions should explain why this candidate was selected."}
+                  </>
+                ) : null}
+                <p className="border-t border-white/10 px-4 py-3 text-xs leading-relaxed text-zinc-400">
+                  {previewMode === "edited"
+                    ? "Rendered preview: check the cuts, watermark, titles, captions, and sound before approving the final video."
+                    : "Original source footage. Render an edited preview to check your cuts, watermark, titles, and captions."}
+                </p>
+                {segments.length > 1 && previewMode === "source" ? (
+                  <div
+                    className="flex flex-wrap gap-2 border-t border-white/10 p-3"
+                    aria-label="Source cuts"
+                  >
+                    {segments.map((segment, index) => (
+                      <button
+                        key={segment.clip.id}
+                        className={`rounded-md border px-3 py-2 text-xs ${selectedSegment?.clip.id === segment.clip.id ? "border-amber-300/50 text-amber-200" : "border-white/10 text-zinc-400"}`}
+                        aria-pressed={
+                          selectedSegment?.clip.id === segment.clip.id
+                        }
+                        onClick={() => selectSegment(segment)}
+                      >
+                        Cut {index + 1} · {segment.durationSeconds.toFixed(1)}s
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+
+              {stage === "edit" ? (
+                <div className="min-w-0 space-y-4">
+                  {activeCandidate && reviewSession && sessionId ? (
+                    <TranscriptEditor
+                      key={`${activeCandidate.id}-${activeCandidate.revision}`}
+                      bridgeUrl={bridgeUrl}
+                      sessionId={sessionId}
+                      candidateId={activeCandidate.id}
+                      revision={activeCandidate.revision}
+                      approvalToken={reviewSession.approvalToken}
+                      plan={activeCandidate.plan}
+                      cues={captionCues}
+                      selectedClipId={selectedClipId}
+                      disabled={
+                        !canEditPlan ||
+                        planIsDirty ||
+                        captionDraftDirty ||
+                        captionsLoading
+                      }
+                      disabledReason={
+                        reviewState === "rendered"
+                          ? "This final clip is read-only. You can still watch and seek through its transcript."
+                          : captionsLoading
+                            ? "Loading the transcript…"
+                            : undefined
+                      }
+                      onSeek={seekToTranscriptTime}
+                      onBusyChange={setEditorialBusy}
+                      onSaved={(session) => {
+                        setReviewSession(session)
+                        const candidate = session.candidates.find(
+                          (candidate) => candidate.id === activeCandidate.id,
+                        )
+                        if (candidate) applyReviewCandidate(session, candidate)
+                      }}
+                    />
+                  ) : null}
+
+                  {captionsLoading ? (
+                    <p role="status" className="text-sm text-zinc-400">
+                      Loading transcript…
+                    </p>
+                  ) : null}
+                  {captionsError ? (
+                    <p role="alert" className="text-sm text-red-300">
+                      {captionsError}
+                    </p>
+                  ) : null}
+                  <details
+                    open={captionDraftDirty || undefined}
+                    className="rounded-xl border border-white/10 bg-[#111214]"
+                  >
+                    <summary className="cursor-pointer p-4 text-sm font-medium">
+                      Correct caption text & timing
+                      {captionDraftDirty ? " · Unsaved" : ""}
+                    </summary>
+                    <CaptionQaPanel
+                      captionsPath={captionsPath}
+                      cues={captionDraftCues}
+                      sourceCues={captionCues}
+                      loading={captionsLoading}
+                      error={captionsError}
+                      disabled={
+                        !canEditPlan || planIsDirty || interactionLocked
+                      }
+                      dirty={captionDraftDirty}
+                      saving={captionRevisionLoading}
+                      saveError={captionRevisionError}
+                      saveResult={captionRevisionResult}
+                      planIsDirty={planIsDirty}
+                      onChangeCue={(index, patch) => {
+                        setCaptionRevisionResult(null)
+                        setCaptionRevisionError(null)
+                        setCaptionDraftCues((cues) =>
+                          cues.map((cue, cueIndex) =>
+                            cueIndex === index ? { ...cue, ...patch } : cue,
+                          ),
+                        )
+                      }}
+                      onReset={() => {
+                        setCaptionRevisionError(null)
+                        setCaptionRevisionResult(null)
+                        setCaptionDraftCues(captionCues)
+                      }}
+                      onSave={() => void saveCaptionRevision()}
+                    />
+                  </details>
+                </div>
+              ) : !reviewSession ? (
+                <section aria-label="Imported plan review" className="space-y-4 rounded-xl border border-white/10 bg-[#111214] p-5">
+                  <h3 className="text-lg font-semibold">{reviewState === "rendered" ? "Your video is ready" : "Review imported plan"}</h3>
+                  <p className="text-sm leading-relaxed text-zinc-400">Imported plans keep the original direct-render workflow. Check the source and the plan in Advanced, then approve the local render.</p>
+                  <Button className="min-h-11 w-full" disabled={!hasImportedPlan || interactionLocked || reviewState === "rendered"} onClick={() => void approveAndRender()}>{reviewState === "rendering" ? "Rendering…" : reviewState === "rendered" ? "Render complete" : "Approve & render imported plan"}</Button>
+                  {approvalResult ? <p className="break-all text-xs text-emerald-200">{approvalResult.outputPath}</p> : null}
+                </section>
+              ) : (
+                <section
+                  aria-label="Review actions"
+                  className="space-y-4 rounded-xl border border-white/10 bg-[#111214] p-5"
+                >
+                  <h3 className="text-lg font-semibold">
+                    {reviewState === "rendered"
+                      ? "Your final video is ready"
+                      : planIsDirty || captionDraftDirty
+                        ? "Save your changes first"
+                        : !hasCurrentPreview
+                          ? "Create an edited preview"
+                          : "Ready for your final check"}
+                  </h3>
+                  <p className="text-sm leading-relaxed text-zinc-400">
+                    {reviewState === "rendered"
+                      ? "Create a local export package with the rendered videos, captions, and handoff notes."
+                      : !hasCurrentPreview
+                        ? "Render a quick local preview to see the actual cuts, watermark, titles, and captions together."
+                        : "Watch Edited preview in the player. If everything looks right, approve the full-quality render."}
+                  </p>
+                  {reviewState === "rendered" ? (
+                    <div className="rounded-lg bg-emerald-300/10 p-3 text-sm text-emerald-200">
+                      <Check className="mr-2 inline size-4" />
+                      Final render complete
+                      <p className="mt-2 break-all text-xs text-zinc-400">
+                        {approvalResult?.outputPath ?? plan.output.path}
                       </p>
                     </div>
-                    <p className="mt-2 font-mono text-[9px] text-zinc-600">r{candidate.revision} · {formatTimecode(getTimelineDuration(candidate.plan))} · {candidateTracks.primaryClips + candidateTracks.overlayClips + candidateTracks.audioClips} clips · v{candidate.plan.version}</p>
-                    {candidate.plan.version === "2" ? <p className="mt-1 text-[9px] text-zinc-600">{candidateTracks.transitions} transitions · {candidateTracks.titleCards} titles · {candidateTracks.burnedCaptions ? "styled captions" : "selectable captions"}{candidateTracks.ducking ? " · ducking" : ""}</p> : null}
-                  </button>
-                  <button
-                    className={`mt-3 flex h-8 w-full items-center justify-center gap-2 rounded-md border text-[10px] font-medium transition disabled:cursor-not-allowed disabled:opacity-45 ${
-                      batchSelected ? "border-sky-300/50 bg-sky-400/15 text-sky-200" : "border-white/10 bg-black/25 text-zinc-400 hover:border-sky-300/35 hover:text-sky-200"
-                    }`}
-                    disabled={!canBatchRender}
-                    onClick={() => toggleBatchCandidate(candidate.id)}
-                    aria-pressed={batchSelected}
-                  >
-                    {batchSelected ? <Check className="size-3" /> : <Sparkles className="size-3" />}
-                    {batchSelected ? "In batch" : previewReady ? "Add to batch" : "Preview first"}
-                  </button>
-                </div>
-              )
-            })}
-          </div>
-          <div className="mt-3 grid gap-2 rounded-lg border border-sky-300/15 bg-sky-400/[0.06] p-3 md:grid-cols-[minmax(0,1fr)_auto]">
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-sky-200">Batch render queue</p>
-              <p className="mt-1 text-[10px] text-zinc-500">
-                {batchCandidateIds.length > 0
-                  ? `${batchCandidateIds.length} preview-approved candidate${batchCandidateIds.length === 1 ? "" : "s"} selected for final render.`
-                  : latestBatch
-                    ? `Latest batch ${latestBatch.status}: ${latestBatch.items.filter((item) => item.status === "rendered").length}/${latestBatch.items.length} rendered.`
-                    : "Add preview-ready candidates, then approve the batch once."}
-              </p>
-              {latestBatch ? (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {latestBatch.items.map((item) => (
-                    <span
-                      key={`${latestBatch.id}-${item.candidateId}`}
-                      className={`rounded-full px-2 py-0.5 text-[9px] ${
-                        item.status === "rendered" ? "bg-emerald-400/15 text-emerald-300"
-                          : item.status === "failed" ? "bg-red-400/15 text-red-300"
-                            : item.status === "rendering" ? "bg-amber-300/15 text-amber-200"
-                              : "bg-white/5 text-zinc-400"
-                      }`}
-                    >
-                      {item.candidateId}: {item.status}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-              {batchError ? <p className="mt-2 text-[10px] text-red-300">{batchError}</p> : null}
-            </div>
-            <div className="flex items-end gap-2">
-              {latestBatch && (latestBatch.status === "failed" || latestBatch.status === "partial") ? (
-                <Button variant="outline" size="sm" onClick={selectFailedBatchCandidates} disabled={batchRendering || latestBatchActive}>
-                  <RotateCcw /> Select failed
-                </Button>
-              ) : null}
-              <Button
-                className="bg-sky-300 text-sky-950 hover:bg-sky-200"
-                disabled={batchCandidateIds.length === 0 || batchRendering || latestBatchActive}
-                onClick={() => void approveBatch()}
-              >
-                {batchRendering || latestBatchActive ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
-                {batchRendering || latestBatchActive ? "Batch rendering..." : `Approve batch (${batchCandidateIds.length})`}
-              </Button>
-            </div>
-          </div>
-          <div className="mt-3 grid gap-2 rounded-lg border border-emerald-300/15 bg-emerald-400/[0.06] p-3 md:grid-cols-[minmax(0,1fr)_auto]">
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-200">Export package</p>
-              <p className="mt-1 text-[10px] text-zinc-500">
-                {latestExportPackage
-                  ? `Latest package ${latestExportPackage.status}: ${latestExportPackage.candidates.length} rendered candidate${latestExportPackage.candidates.length === 1 ? "" : "s"} bundled.`
-                  : renderedCandidateIds.length > 0
-                    ? `${renderedCandidateIds.length} rendered candidate${renderedCandidateIds.length === 1 ? "" : "s"} ready for a local handoff bundle.`
-                    : "Render at least one candidate before creating a handoff bundle."}
-              </p>
-              {latestExportPackage ? (
-                <p className="mt-2 font-mono text-[9px] text-emerald-200/70">
-                  {latestExportPackage.packagePath}
-                </p>
-              ) : null}
-              {latestExportPackage?.warnings.length ? (
-                <p className="mt-1 text-[10px] text-amber-200">
-                  {latestExportPackage.warnings.length} packaging warning{latestExportPackage.warnings.length === 1 ? "" : "s"}; see manifest for details.
-                </p>
-              ) : null}
-              {exportError ? <p className="mt-2 text-[10px] text-red-300">{exportError}</p> : null}
-            </div>
-            <div className="flex items-end">
-              <Button
-                className="bg-emerald-300 text-emerald-950 hover:bg-emerald-200"
-                disabled={renderedCandidateIds.length === 0 || exportPackaging || latestBatchActive || batchRendering}
-                onClick={() => void createExportPackage()}
-              >
-                {exportPackaging ? <LoaderCircle className="animate-spin" /> : <Download />}
-                {exportPackaging ? "Packaging..." : `Package ${renderedCandidateIds.length}`}
-              </Button>
-            </div>
-          </div>
-          {activeCandidate ? (
-            <div className="mt-3 grid gap-2 rounded-lg border border-white/10 bg-black/20 p-3 md:grid-cols-[minmax(0,1fr)_auto]">
-              <div>
-                <label className="text-[9px] font-semibold uppercase tracking-[0.14em] text-zinc-600" htmlFor="revision-note">
-                  Revision note
-                </label>
-                <input
-                  id="revision-note"
-                  className="mt-1 h-8 w-full rounded-md border border-white/10 bg-black/30 px-2 text-xs text-zinc-200 outline-none focus:border-amber-300/50"
-                  value={revisionNote}
-                  onChange={(event) => setRevisionNote(event.target.value)}
-                  placeholder="What changed in this revision?"
-                  maxLength={1_000}
-                />
-              </div>
-              <Button
-                className="self-end bg-zinc-100 text-zinc-950 hover:bg-white"
-                disabled={!planIsDirty || interactionLocked || reviewState === "rendered"}
-                onClick={() => void saveRevision()}
-              >
-                {reviewState === "saving" ? <LoaderCircle className="animate-spin" /> : <Save />}
-                {reviewState === "saving" ? "Saving…" : `Save as r${activeCandidate.revision + 1}`}
-              </Button>
-              <p className="text-[10px] text-zinc-500 md:col-span-2">
-                {planIsDirty
-                  ? "Unsaved edits invalidate the previous preview. Save before rendering again."
-                  : hasCurrentPreview
-                    ? `Revision ${activeCandidate.revision} has a verified preview and can be approved for final render.`
-                    : `Revision ${activeCandidate.revision} is saved. Render its preview before final approval.`}
-              </p>
-            </div>
-          ) : null}
-          {sessionError ? <p className="mt-2 text-xs text-red-300">{sessionError}</p> : null}
-        </section>
-      ) : sessionError ? (
-        <div className="border-b border-red-400/20 bg-red-400/10 px-4 py-3 text-xs text-red-200">{sessionError}</div>
-      ) : null}
-
-      {activeCandidate && reviewSession && sessionId ? (
-        <TranscriptEditor
-          key={`${activeCandidate.id}-${activeCandidate.revision}`}
-          bridgeUrl={bridgeUrl}
-          sessionId={sessionId}
-          candidateId={activeCandidate.id}
-          revision={activeCandidate.revision}
-          approvalToken={reviewSession.approvalToken}
-          plan={activeCandidate.plan}
-          cues={captionCues}
-          selectedClipId={selectedClipId}
-          disabled={!canEditPlan || planIsDirty || captionDraftDirty || captionsLoading}
-          onSeek={seekToTranscriptTime}
-          onBusyChange={setEditorialBusy}
-          onSaved={(session) => {
-            setReviewSession(session)
-            const candidate = session.candidates.find((candidate) => candidate.id === activeCandidate.id)
-            if (candidate) applyReviewCandidate(session, candidate)
-          }}
-        />
-      ) : null}
-
-      {planError ? (
-        <div className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-red-400/30 bg-red-400/10 p-3 text-xs text-red-100">
-          <CircleAlert className="mt-0.5 size-4 shrink-0" />
-          <div className="min-w-0">
-            <p className="font-medium">This plan could not be imported</p>
-            <p className="mt-1 max-h-16 overflow-auto whitespace-pre-wrap text-red-200/70">{planError}</p>
-          </div>
-        </div>
-      ) : null}
-
-      <section className="grid min-h-[calc(100vh-14rem)] grid-cols-1 border-b border-white/10 lg:grid-cols-[250px_minmax(0,1fr)_280px]">
-        <aside className="hidden border-r border-white/10 bg-[#101113] lg:block">
-          <PanelHeading icon={<FolderOpen />} label="Project media" />
-          <div className="space-y-2 p-3">
-            {plan.assets.map((asset) => (
-              <div
-                key={asset.id}
-                className="group rounded-lg border border-white/8 bg-white/[0.025] p-2.5 hover:border-white/15 hover:bg-white/[0.04]"
-              >
-                <div className="flex items-center gap-2.5">
-                  <div className="grid size-9 shrink-0 place-items-center rounded-md bg-gradient-to-br from-zinc-700 to-zinc-900 text-zinc-300">
-                    {asset.kind === "video" ? <Film className="size-4" /> : asset.kind === "audio" ? <Music2 className="size-4" /> : <Captions className="size-4" />}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="truncate text-xs font-medium">{asset.id}</p>
-                    <p className="mt-0.5 truncate text-[10px] uppercase tracking-wider text-zinc-600">{asset.kind}</p>
-                  </div>
-                </div>
-                <p className="mt-2 truncate text-[10px] text-zinc-600" title={asset.path}>{asset.path}</p>
-              </div>
-            ))}
-
-            {!reviewSession ? <button
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-white/15 py-3 text-[11px] text-zinc-500 transition hover:border-amber-300/40 hover:text-amber-200"
-              onClick={() => videoInputRef.current?.click()}
-            >
-              <FolderOpen className="size-3.5" />
-              {videoName ? "Replace source video" : "Attach source video"}
-            </button> : null}
-          </div>
-
-          <div className="mt-3 border-t border-white/10">
-            <PanelHeading icon={<WandSparkles />} label="Agent handoff" />
-            <div className="m-3 rounded-lg border border-violet-400/20 bg-violet-400/[0.06] p-3">
-              <p className="text-[11px] font-medium text-violet-200">Plan validated by MCP bridge</p>
-              <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
-                Cuts, transitions, title cards, overlays, ducked audio, styled captions, and output settings are ready for human review.
-              </p>
-            </div>
-          </div>
-        </aside>
-
-        <div className="flex min-w-0 flex-col bg-[#08090a]">
-          <div className="flex h-10 items-center justify-between border-b border-white/10 px-3 text-[10px] text-zinc-500">
-            <span className="flex items-center gap-2"><Maximize2 className="size-3" /> Preview monitor</span>
-            <span>{plan.project.width} × {plan.project.height} · {plan.project.frameRate} fps</span>
-          </div>
-
-          <div className="flex flex-1 items-center justify-center p-5 md:p-8">
-            <div
-              className="relative w-full max-w-4xl overflow-hidden rounded-md border border-white/10 bg-black shadow-2xl shadow-black/60"
-              style={{ aspectRatio: `${plan.project.width} / ${plan.project.height}` }}
-            >
-              {videoUrl ? (
-                <video
-                  ref={videoRef}
-                  className="size-full object-contain"
-                  src={videoUrl}
-                  onLoadedMetadata={() =>
-                    seekToSelectionTime(selectionProgressSeconds)
-                  }
-                  onTimeUpdate={handleSelectionTimeUpdate}
-                  onPause={() => setIsPlaying(false)}
-                  onPlay={() => setIsPlaying(true)}
-                />
-              ) : (
-                <div className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_50%_40%,rgba(63,63,70,0.3),transparent_55%)]">
-                  <div className="max-w-sm px-6 text-center">
-                    <div className="mx-auto grid size-12 place-items-center rounded-2xl border border-white/10 bg-white/[0.04] text-zinc-400">
-                      <Film className="size-5" />
+                  ) : (
+                    <>
+                      <Button
+                        className="min-h-11 w-full bg-amber-300 text-zinc-950 hover:bg-amber-200"
+                        disabled={
+                          !reviewSession?.selectedCandidateId ||
+                          planIsDirty ||
+                          captionDraftDirty ||
+                          interactionLocked ||
+                          preflightLoading ||
+                          Boolean(preflightError) ||
+                          activePreflightBlocks > 0
+                        }
+                        onClick={() =>
+                          void (hasCurrentPreview
+                            ? approveAndRender()
+                            : renderPreview())
+                        }
+                      >
+                        {interactionLocked ? (
+                          <LoaderCircle className="animate-spin" />
+                        ) : hasCurrentPreview ? (
+                          <Check />
+                        ) : (
+                          <Eye />
+                        )}
+                        {reviewState === "previewing"
+                          ? "Rendering preview…"
+                          : reviewState === "rendering"
+                            ? "Rendering final…"
+                            : hasCurrentPreview
+                              ? "Approve & render final"
+                              : "Render edited preview"}
+                      </Button>
+                      {hasCurrentPreview ? (
+                        <Button
+                          variant="ghost"
+                          className="w-full"
+                          disabled={
+                            interactionLocked ||
+                            planIsDirty ||
+                            captionDraftDirty
+                          }
+                          onClick={() => {
+                            setPreviewMode("edited")
+                          }}
+                        >
+                          Watch edited preview
+                        </Button>
+                      ) : null}
+                      <p className="text-xs text-zinc-500">
+                        {hasCurrentPreview
+                          ? "Final rendering starts only when you approve above."
+                          : "Preview rendering does not approve the final export."}
+                      </p>
+                    </>
+                  )}
+                  <PreflightPanel
+                    preflight={activePreflight}
+                    loading={preflightLoading}
+                    error={preflightError}
+                    dirty={planIsDirty || captionDraftDirty}
+                  />
+                  {preflightError ? <Button variant="outline" disabled={interactionLocked || planIsDirty || captionDraftDirty} onClick={() => setPreflightAttempt((attempt) => attempt + 1)}>Retry checks</Button> : null}
+                  {renderedCandidateIds.length > 0 ? (
+                    <div className="space-y-3 border-t border-white/10 pt-4">
+                      <p className="text-sm text-zinc-300">
+                        {renderedCandidateIds.length} final video
+                        {renderedCandidateIds.length === 1 ? "" : "s"} ready
+                      </p>
+                      <Button
+                        className="w-full"
+                        disabled={exportPackaging || interactionLocked}
+                        onClick={() => void createExportPackage()}
+                      >
+                        <Download />
+                        {exportPackaging
+                          ? "Creating package…"
+                          : "Create export package"}
+                      </Button>
+                      {latestExportPackage ? (
+                        <div className="rounded-lg border border-emerald-300/20 p-3">
+                          <p className="text-sm text-emerald-200">
+                            Export package{" "}
+                            {latestExportPackage.status === "partial"
+                              ? "created with warnings"
+                              : "ready"}
+                          </p>
+                          <p className="mt-2 text-xs text-zinc-400">
+                            {latestExportPackage.packagePath.startsWith("/") ? "Open this folder in Finder:" : "Saved folder, inside your local media folder:"}
+                          </p>
+                          <p className="mt-1 break-all select-all text-xs text-zinc-300">
+                            {latestExportPackage.packagePath}
+                          </p>
+                          {latestExportPackage.warnings.map((warning, i) => (
+                            <p key={i} className="mt-2 text-xs text-amber-200">
+                              {warning}
+                            </p>
+                          ))}
+                        </div>
+                      ) : null}
+                      {exportError ? (
+                        <p role="alert" className="text-sm text-red-300">
+                          {exportError}
+                        </p>
+                      ) : null}
                     </div>
-                    <p className="mt-4 text-sm font-medium">Attach the original interview</p>
-                    <p className="mt-1.5 text-xs leading-relaxed text-zinc-500">
-                      The plan is loaded. Attach the source video to preview each proposed cut at its exact source time.
-                    </p>
-                    <Button className="mt-4 bg-white text-zinc-950 hover:bg-zinc-200" onClick={() => videoInputRef.current?.click()}>
-                      <FolderOpen /> Attach source
-                    </Button>
-                  </div>
-                </div>
+                  ) : null}
+                </section>
               )}
-
-              <VisualDesignCanvas
-                plan={plan}
-                currentTimelineTime={currentTimelineTime}
-                activeCaption={activeCaption}
-                captionsEnabled={captionsEnabled}
-                selectedSegment={selectedSegment}
-                selectedOverlayClipId={selectedOverlayClipId}
-                selectedTitleCardId={selectedTitleCardId}
-                disabled={!canEditPlan}
-                onSelectOverlayClip={setSelectedOverlayClipId}
-                onSelectTitleCard={setSelectedTitleCardId}
-                onApply={reviseProductionPlan}
-              />
             </div>
-          </div>
-
-          <div className="flex h-16 items-center justify-center gap-3 border-t border-white/10 bg-[#0e0f11] px-4">
-            <button
-              className="grid size-7 place-items-center rounded-full border border-white/10 text-zinc-300 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-30"
-              disabled={!videoUrl}
-              onClick={() => seekBy(-5)}
-              aria-label="Seek backward 5 seconds"
-            >
-              <SkipBack className="size-3.5" />
-            </button>
-            <button
-              className="grid size-7 place-items-center rounded-full bg-zinc-100 text-zinc-950 disabled:cursor-not-allowed disabled:opacity-30"
-              disabled={!videoUrl}
-              onClick={() => void toggleSelectionPlayback()}
-              aria-label={isPlaying ? "Pause selection" : "Play selection"}
-            >
-              {isPlaying ? <Pause className="size-3.5 fill-current" /> : <Play className="ml-0.5 size-3.5 fill-current" />}
-            </button>
-            <button
-              className="grid size-7 place-items-center rounded-full border border-white/10 text-zinc-300 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-30"
-              disabled={!videoUrl}
-              onClick={() => seekBy(5)}
-              aria-label="Seek forward 5 seconds"
-            >
-              <SkipForward className="size-3.5" />
-            </button>
-            <input
-              className="h-1.5 min-w-32 flex-1 cursor-pointer accent-amber-300 disabled:cursor-not-allowed disabled:opacity-30 md:max-w-md"
-              type="range"
-              min={0}
-              max={selectedSegment?.durationSeconds ?? 0}
-              step={0.1}
-              value={selectionProgressSeconds}
-              disabled={!videoUrl || !selectedSegment}
-              onChange={(event) => seekToSelectionTime(Number(event.target.value))}
-              aria-label="Selection position"
-            />
-            <span className="min-w-28 text-right font-mono text-[11px] text-zinc-400">
-              {formatTimecode(currentTimelineTime)}
-              <span className="text-zinc-700"> / </span>
-              {formatTimecode(totalDuration)}
-            </span>
-          </div>
-        </div>
-
-        <aside className="hidden overflow-y-auto border-l border-white/10 bg-[#101113] lg:block">
-          <PanelHeading icon={<Gauge />} label="Clip inspector" />
-          {selectedSegment ? (
-            <div className="divide-y divide-white/8">
-              <InspectorSection title="Selection">
-                <InspectorValue label="Clip" value={humanizeId(selectedSegment.clip.id)} />
-                <InspectorValue label="Asset" value={selectedAsset?.id ?? selectedSegment.clip.assetId} />
-                {activeCandidate ? (
-                  <div className="rounded-lg border border-violet-300/15 bg-violet-400/[0.06] p-3">
-                    <p className="text-[9px] font-semibold uppercase tracking-[0.14em] text-violet-200">Why this clip</p>
-                    <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
-                      {activeClipRationale?.note || activeCandidate.rationale || "No clip-level rationale recorded. Ask the producer agent to create distinct candidate rationales on the next run."}
-                    </p>
-                  </div>
-                ) : null}
-                {reviewSession ? (
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={plan.timeline.clips[0]?.id === selectedSegment.clip.id || !canEditPlan || captionDraftDirty}
-                      onClick={() => setPlan(movePlanClip(plan, selectedSegment.clip.id, -1))}
-                    >
-                      <ArrowUp /> Earlier
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={plan.timeline.clips.at(-1)?.id === selectedSegment.clip.id || !canEditPlan || captionDraftDirty}
-                      onClick={() => setPlan(movePlanClip(plan, selectedSegment.clip.id, 1))}
-                    >
-                      <ArrowDown /> Later
-                    </Button>
-                  </div>
-                ) : null}
-              </InspectorSection>
-              <InspectorSection title="Source range">
-                <div className="grid grid-cols-2 gap-2">
-                  <NumberEditor
-                    label="In (seconds)"
-                    value={selectedSegment.clip.sourceStart}
-                    min={0}
-                    max={selectedSegment.clip.sourceEnd - 0.01}
-                    step={0.1}
-                    disabled={!canEditPlan}
-                    onChange={(value) => reviseSelectedClip({ sourceStart: value })}
-                  />
-                  <NumberEditor
-                    label="Out (seconds)"
-                    value={selectedSegment.clip.sourceEnd}
-                    min={selectedSegment.clip.sourceStart + 0.01}
-                    step={0.1}
-                    disabled={!canEditPlan}
-                    onChange={(value) => reviseSelectedClip({ sourceEnd: value })}
-                  />
-                </div>
-                <InspectorValue label="Source length" value={`${(selectedSegment.clip.sourceEnd - selectedSegment.clip.sourceStart).toFixed(1)}s`} />
-              </InspectorSection>
-              <InspectorSection title="Playback">
-                <NumberEditor
-                  label="Speed"
-                  value={selectedSegment.clip.speed}
-                  min={0.25}
-                  max={4}
-                  step={0.05}
-                  suffix="×"
-                  disabled={!canEditPlan}
-                  onChange={(value) => reviseSelectedClip({ speed: value })}
-                />
-                <NumberEditor
-                  label="Volume"
-                  value={selectedSegment.clip.volume}
-                  min={0}
-                  max={2}
-                  step={0.05}
-                  suffix="×"
-                  disabled={!canEditPlan}
-                  onChange={(value) => reviseSelectedClip({ volume: value })}
-                />
-                <InspectorValue icon={<Clock3 />} label="Timeline length" value={`${selectedSegment.durationSeconds.toFixed(1)}s`} />
-                {reviewSession ? (
-                  <button
-                    className={`flex w-full items-center justify-between rounded-md border px-2.5 py-2 text-[10px] transition ${plan.timeline.captionsAssetId ? "border-violet-300/30 bg-violet-400/10 text-violet-200" : "border-white/10 text-zinc-500"}`}
-                    onClick={() => setPlan(setPlanCaptionsEnabled(plan, !plan.timeline.captionsAssetId))}
-                    disabled={!plan.assets.some((asset) => asset.kind === "captions") || !canEditPlan || captionDraftDirty}
-                    aria-pressed={Boolean(plan.timeline.captionsAssetId)}
-                  >
-                    <span className="flex items-center gap-1.5"><Captions className="size-3" /> Include captions</span>
-                    <span>{plan.timeline.captionsAssetId ? "On" : "Off"}</span>
-                  </button>
-                ) : null}
-              </InspectorSection>
-              <ProductionInspector
-                plan={plan}
-                disabled={!canEditPlan || captionDraftDirty}
-                planIsDirty={planIsDirty}
-                captionGenerationLoading={captionGenerationLoading}
-                captionGenerationError={captionGenerationError}
-                captionGenerationResult={captionGenerationResult}
-                systemCheck={systemCheck}
-                systemCheckLoading={systemCheckLoading}
-                systemCheckError={systemCheckError}
-                selectedOverlayClipId={selectedOverlayClipId}
-                selectedAudioTrackId={selectedAudioTrackId}
-                selectedAudioClipId={selectedAudioClipId}
-                selectedTransitionId={selectedTransitionId}
-                selectedTitleCardId={selectedTitleCardId}
-                onSelectOverlayClip={setSelectedOverlayClipId}
-                onSelectAudioTrack={(trackId) => {
-                  setSelectedAudioTrackId(trackId)
-                  const track = plan.version === "2" ? plan.timeline.audioTracks.find((entry) => entry.id === trackId) : undefined
-                  setSelectedAudioClipId(track?.clips[0]?.id ?? "")
-                }}
-                onSelectAudioClip={setSelectedAudioClipId}
-                onSelectTransition={setSelectedTransitionId}
-                onSelectTitleCard={setSelectedTitleCardId}
-                onRunSystemCheck={() => void runSystemCheck()}
-                onGenerateCaptions={() => void generateCaptions()}
-                onApply={reviseProductionPlan}
-              />
-              <CaptionQaPanel
-                captionsPath={captionsPath}
-                cues={captionDraftCues}
-                sourceCues={captionCues}
-                loading={captionsLoading}
-                error={captionsError}
-                disabled={!canEditPlan || planIsDirty || interactionLocked}
-                dirty={captionDraftDirty}
-                saving={captionRevisionLoading}
-                saveError={captionRevisionError}
-                saveResult={captionRevisionResult}
-                planIsDirty={planIsDirty}
-                onChangeCue={(index, patch) => {
-                  setCaptionRevisionResult(null)
-                  setCaptionRevisionError(null)
-                  setCaptionDraftCues((cues) => cues.map((cue, cueIndex) =>
-                    cueIndex === index ? { ...cue, ...patch } : cue,
-                  ))
-                }}
-                onReset={() => {
-                  setCaptionRevisionError(null)
-                  setCaptionRevisionResult(null)
-                  setCaptionDraftCues(captionCues)
-                }}
-                onSave={() => void saveCaptionRevision()}
-              />
-              <PreflightPanel
-                preflight={activePreflight}
-                loading={preflightLoading}
-                error={preflightError}
-                dirty={planIsDirty || captionDraftDirty}
-              />
-              <InspectorSection title="Review state">
-                <div className={`rounded-lg border p-3 ${
-                  reviewState === "rendered"
-                    ? "border-emerald-400/25 bg-emerald-400/8"
-                    : reviewState === "failed"
-                      ? "border-red-400/25 bg-red-400/8"
-                      : "border-amber-300/20 bg-amber-300/[0.06]"
-                }`}>
-                  <p className={`flex items-center gap-2 text-xs font-medium ${
-                    reviewState === "rendered"
-                      ? "text-emerald-300"
-                      : reviewState === "failed"
-                        ? "text-red-300"
-                        : "text-amber-200"
-                  }`}>
-                    {reviewState === "rendering" || reviewState === "previewing" || reviewState === "saving" ? (
-                      <LoaderCircle className="size-3.5 animate-spin" />
-                    ) : reviewState === "rendered" ? (
-                      <Check className="size-3.5" />
-                    ) : reviewState === "failed" ? (
-                      <CircleAlert className="size-3.5" />
-                    ) : (
-                      <Sparkles className="size-3.5" />
-                    )}
-                    {reviewState === "saving"
-                      ? "Saving revision"
-                      : reviewState === "previewing"
-                        ? "Rendering preview"
-                        : reviewState === "preview-ready"
-                          ? "Preview ready"
-                          : reviewState === "rendering"
-                      ? "Rendering locally"
-                      : reviewState === "rendered"
-                        ? "Project rendered"
-                        : reviewState === "failed"
-                          ? "Render failed"
-                          : "Awaiting approval"}
+            {stage === "review" && reviewSession ? (
+              <details className="rounded-xl border border-white/10 bg-[#111214]">
+                <summary className="cursor-pointer p-4 text-sm font-medium">
+                  Render several clips together
+                </summary>
+                <div className="space-y-4 px-4 pb-4">
+                  <p className="text-sm text-zinc-400">
+                    Select clips whose current edited previews you have
+                    reviewed, then approve their final renders together.
                   </p>
-                  <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
-                    {reviewState === "saving"
-                      ? "The revised plan is being validated, snapshotted, and saved."
-                      : reviewState === "previewing"
-                        ? "A fast local preview is being rendered for this exact revision."
-                        : reviewState === "preview-ready"
-                          ? "Review the rendered preview, then use Approve final for the high-quality output."
-                          : reviewState === "rendering"
-                      ? "The local bridge saved the approved plan and is rendering its MP4 output."
-                      : reviewState === "rendered"
-                        ? `Saved ${approvalResult?.outputPath ?? plan.output.path}`
-                        : reviewState === "failed"
-                          ? approvalError ?? "Start the local bridge and retry the render."
-                          : "Work left to right: choose a candidate, adjust and save if needed, render preview, inspect it, then approve final or batch render."}
-                  </p>
-                  {previewUrl && reviewState !== "rendered" ? (
-                    <a
-                      className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-medium text-sky-300 hover:text-sky-200"
-                      href={previewUrl}
-                      target="_blank"
-                      rel="noreferrer"
+                  {reviewSession.candidates.map((candidate) => (
+                    <label
+                      key={candidate.id}
+                      className="flex items-center gap-3 text-sm text-zinc-300"
                     >
-                      <Play className="size-3" /> Open rendered preview
-                    </a>
-                  ) : null}
-                  {reviewState === "rendered" && approvalResult ? (
-                    <p className="mt-2 border-t border-emerald-300/10 pt-2 font-mono text-[9px] text-emerald-200/65">
-                      Project: {approvalResult.projectRecordPath}
-                    </p>
-                  ) : null}
-                </div>
-              </InspectorSection>
-              {reviewSession && activeCandidate ? (
-                <InspectorSection title="Reviewer notes & audit">
-                  <textarea
-                    className="min-h-16 w-full resize-y rounded-md border border-white/10 bg-black/30 p-2 text-[10px] text-zinc-200 outline-none focus:border-amber-300/50"
-                    value={reviewerNote}
-                    onChange={(event) => setReviewerNote(event.target.value)}
-                    placeholder="Add a decision note for this revision"
-                    maxLength={2_000}
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full"
-                    disabled={!reviewerNote.trim()}
-                    onClick={() => void addReviewerNote()}
-                  >
-                    <MessageSquareText /> Save note
-                  </Button>
-                  <p className="text-[9px] leading-relaxed text-zinc-600">
-                    {reviewSession.reviewerNotes.filter((note) => note.candidateId === activeCandidate.id).length} notes · {reviewSession.events.filter((event) => event.candidateId === activeCandidate.id).length} audit events
-                  </p>
-                  {reviewSession.events.filter((event) => event.candidateId === activeCandidate.id).slice(-3).reverse().map((event) => (
-                    <div key={event.id} className="border-l border-white/10 pl-2 text-[9px] text-zinc-500">
-                      <p className="font-medium text-zinc-400">{event.type.replaceAll("-", " ")} · r{event.revision ?? activeCandidate.revision}</p>
-                      <p>{new Date(event.at).toLocaleString()}</p>
-                    </div>
+                      <input
+                        type="checkbox"
+                        checked={batchCandidateIds.includes(candidate.id)}
+                        disabled={
+                          !canBatchRenderCandidate(candidate) ||
+                          interactionLocked || planIsDirty || captionDraftDirty
+                        }
+                        onChange={() => toggleBatchCandidate(candidate.id)}
+                      />
+                      <span>
+                        {candidate.title}
+                        <span className="ml-2 text-xs text-zinc-500">
+                          {candidate.outputExists
+                            ? "Final ready"
+                            : candidateHasCurrentPreview(candidate)
+                              ? "Preview ready"
+                              : "Preview needed"}
+                        </span>
+                      </span>
+                    </label>
                   ))}
-                </InspectorSection>
-              ) : null}
-            </div>
-          ) : null}
-        </aside>
-      </section>
-
-      <section className={`${plan.version === "2" ? "h-60" : "h-44"} bg-[#111214]`}>
-        <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
-          <div className="flex items-center gap-3 text-[10px] text-zinc-500">
-            <span className="font-medium uppercase tracking-[0.16em] text-zinc-300">Timeline</span>
-            <span>{segments.length} clips</span>
-            {plan.version === "2" ? <span>{trackCounts.overlayTracks} overlay · {trackCounts.audioTracks} audio · {trackCounts.transitions} transitions</span> : null}
-            <span>{formatTimecode(totalDuration)}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            {!reviewSession ? <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setPlan(sampleEditPlan)
-                setSelectedClipId(sampleEditPlan.timeline.clips[0]?.id ?? "")
-                resetProductionSelections(sampleEditPlan)
-                setCurrentSourceTime(sampleEditPlan.timeline.clips[0]?.sourceStart ?? 0)
-                setReviewState("review")
-                setApprovalResult(null)
-                setApprovalError(null)
-                setPlanError(null)
-              }}
-            >
-              <RotateCcw /> Reset sample
-            </Button> : null}
-            <Button variant="ghost" size="sm" onClick={downloadPlan}>
-              <Download /> Download plan
-            </Button>
-          </div>
-        </div>
-
-        <div className="grid h-[calc(100%-2.5rem)] grid-cols-[84px_minmax(0,1fr)] overflow-hidden">
-          <div className="border-r border-white/10 pt-7 text-[10px] text-zinc-600">
-            <div className="flex h-11 items-center gap-2 border-y border-white/5 px-3"><Film className="size-3" /> Video 1</div>
-            {plan.version === "2" ? <div className="flex h-7 items-center gap-2 border-b border-white/5 px-3"><Layers3 className="size-3" /> Layers</div> : null}
-            {plan.version === "2" ? <div className="flex h-7 items-center gap-2 border-b border-white/5 px-3"><Sparkles className="size-3" /> Finish</div> : null}
-            <div className="flex h-7 items-center gap-2 border-b border-white/5 px-3"><Captions className="size-3" /> Captions</div>
-          </div>
-
-          <div className="min-w-0 overflow-x-auto">
-            <div className="relative min-w-[720px] px-2 pt-7">
-              <TimelineRuler duration={totalDuration} />
-              <div className="relative flex h-11 overflow-hidden rounded-md border border-white/10 bg-black/40">
-                {segments.map((segment, index) => (
-                  <button
-                    key={segment.clip.id}
-                    className={`relative min-w-28 overflow-hidden border-r border-black/35 px-3 text-left transition ${
-                      segment.clip.id === selectedSegment?.clip.id
-                        ? "bg-amber-300 text-zinc-950 shadow-[inset_0_0_0_2px_rgba(255,255,255,0.55)]"
-                        : index % 2 === 0
-                          ? "bg-amber-300/55 text-amber-50 hover:bg-amber-300/70"
-                          : "bg-orange-300/45 text-orange-50 hover:bg-orange-300/60"
-                    }`}
-                    style={{ width: `${(segment.durationSeconds / totalDuration) * 100}%` }}
-                    onClick={() => selectSegment(segment)}
+                  <Button
+                    disabled={!batchCandidateIds.length || interactionLocked || planIsDirty || captionDraftDirty}
+                    onClick={() => void approveBatch()}
                   >
-                    <span className="block truncate text-[10px] font-semibold">{humanizeId(segment.clip.id)}</span>
-                    <span className={`mt-0.5 block font-mono text-[9px] ${segment.clip.id === selectedSegment?.clip.id ? "text-zinc-700" : "text-white/55"}`}>
-                      {segment.durationSeconds.toFixed(1)}s · {segment.clip.speed.toFixed(2)}×
-                    </span>
-                  </button>
-                ))}
-              </div>
-              {plan.version === "2" ? (
-                <div className="mt-1 flex h-7 items-center rounded border border-sky-300/15 bg-sky-400/10 px-3 text-[9px] text-sky-200/80">
-                  <Layers3 className="mr-2 size-3" />
-                  <span>{trackCounts.overlayClips} overlay clips across {trackCounts.overlayTracks} tracks</span>
-                  <span className="ml-auto"><Music2 className="mr-1 inline size-3" />{trackCounts.audioClips} mixed-audio clips</span>
+                    {batchRendering || latestBatchActive
+                      ? "Rendering…"
+                      : `Approve & render ${batchCandidateIds.length} clips`}
+                  </Button>
+                  {latestBatch ? (
+                    <p className="text-sm text-zinc-400">
+                      Latest batch: {latestBatch.status} ·{" "}
+                      {
+                        latestBatch.items.filter(
+                          (item) => item.status === "rendered",
+                        ).length
+                      }
+                      /{latestBatch.items.length} complete
+                    </p>
+                  ) : null}
+                  {latestBatch &&
+                  (latestBatch.status === "failed" ||
+                    latestBatch.status === "partial") ? (
+                    <Button
+                      variant="outline"
+                      disabled={interactionLocked}
+                      onClick={selectFailedBatchCandidates}
+                    >
+                      Select failed clips to retry
+                    </Button>
+                  ) : null}
+                  {batchError ? (
+                    <p role="alert" className="text-sm text-red-300">
+                      {batchError}
+                    </p>
+                  ) : null}
                 </div>
-              ) : null}
-              {plan.version === "2" ? (
-                <div className="mt-1 flex h-7 items-center rounded border border-amber-300/15 bg-amber-300/10 px-3 text-[9px] text-amber-100/80">
-                  <Sparkles className="mr-2 size-3" />
-                  <span>{trackCounts.transitions} transitions · {trackCounts.titleCards} title cards</span>
-                  <span className="ml-auto">{trackCounts.burnedCaptions ? "Styled burn-in captions" : "Selectable captions"}{trackCounts.ducking ? " · Smart ducking" : ""}</span>
+              </details>
+            ) : null}
+            <details className="rounded-xl border border-white/10 bg-[#111214]">
+              <summary className="cursor-pointer p-4 text-sm font-medium">
+                Advanced{" "}
+                <span className="ml-2 font-normal text-zinc-500">
+                  Layers, audio, providers & history
+                </span>
+              </summary>
+              <div className="grid min-w-0 gap-4 p-4 lg:grid-cols-2">
+                <div className="min-w-0 space-y-4">
+                  <p className="text-sm font-medium">Production controls</p>
+                  <label className="flex items-center gap-2 text-sm text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={showLayout}
+                      onChange={(event) => {
+                        setShowLayout(event.target.checked)
+                        setPreviewMode("source")
+                      }}
+                    />
+                    Show layout guides on source video
+                  </label>
+                  <p className="text-xs text-zinc-500">
+                    Guides let you move design elements. Check the rendered
+                    preview for the final appearance.
+                  </p>
+                  {selectedSegment ? (
+                    <div className="divide-y divide-white/8">
+                      <InspectorSection title="Selection">
+                        <InspectorValue
+                          label="Clip"
+                          value={humanizeId(selectedSegment.clip.id)}
+                        />
+                        <InspectorValue
+                          label="Asset"
+                          value={
+                            selectedAsset?.id ?? selectedSegment.clip.assetId
+                          }
+                        />
+                        {activeCandidate ? (
+                          <div className="rounded-lg border border-violet-300/15 bg-violet-400/[0.06] p-3">
+                            <p className="text-[9px] font-semibold uppercase tracking-[0.14em] text-violet-200">
+                              Why this clip
+                            </p>
+                            <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
+                              {activeClipRationale?.note ||
+                                activeCandidate.rationale ||
+                                "No clip-level rationale recorded. Ask the producer agent to create distinct candidate rationales on the next run."}
+                            </p>
+                          </div>
+                        ) : null}
+                        {reviewSession ? (
+                          <div className="grid grid-cols-2 gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={
+                                plan.timeline.clips[0]?.id ===
+                                  selectedSegment.clip.id ||
+                                !canEditPlan ||
+                                captionDraftDirty
+                              }
+                              onClick={() =>
+                                setPlan(
+                                  movePlanClip(
+                                    plan,
+                                    selectedSegment.clip.id,
+                                    -1,
+                                  ),
+                                )
+                              }
+                            >
+                              <ArrowUp /> Earlier
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={
+                                plan.timeline.clips.at(-1)?.id ===
+                                  selectedSegment.clip.id ||
+                                !canEditPlan ||
+                                captionDraftDirty
+                              }
+                              onClick={() =>
+                                setPlan(
+                                  movePlanClip(
+                                    plan,
+                                    selectedSegment.clip.id,
+                                    1,
+                                  ),
+                                )
+                              }
+                            >
+                              <ArrowDown /> Later
+                            </Button>
+                          </div>
+                        ) : null}
+                      </InspectorSection>
+                      <InspectorSection title="Source range">
+                        <div className="grid grid-cols-2 gap-2">
+                          <NumberEditor
+                            label="In (seconds)"
+                            value={selectedSegment.clip.sourceStart}
+                            min={0}
+                            max={selectedSegment.clip.sourceEnd - 0.01}
+                            step={0.1}
+                            disabled={!canEditPlan}
+                            onChange={(value) =>
+                              reviseSelectedClip({ sourceStart: value })
+                            }
+                          />
+                          <NumberEditor
+                            label="Out (seconds)"
+                            value={selectedSegment.clip.sourceEnd}
+                            min={selectedSegment.clip.sourceStart + 0.01}
+                            step={0.1}
+                            disabled={!canEditPlan}
+                            onChange={(value) =>
+                              reviseSelectedClip({ sourceEnd: value })
+                            }
+                          />
+                        </div>
+                        <InspectorValue
+                          label="Source length"
+                          value={`${(selectedSegment.clip.sourceEnd - selectedSegment.clip.sourceStart).toFixed(1)}s`}
+                        />
+                      </InspectorSection>
+                      <InspectorSection title="Playback">
+                        <NumberEditor
+                          label="Speed"
+                          value={selectedSegment.clip.speed}
+                          min={0.25}
+                          max={4}
+                          step={0.05}
+                          suffix="×"
+                          disabled={!canEditPlan}
+                          onChange={(value) =>
+                            reviseSelectedClip({ speed: value })
+                          }
+                        />
+                        <NumberEditor
+                          label="Volume"
+                          value={selectedSegment.clip.volume}
+                          min={0}
+                          max={2}
+                          step={0.05}
+                          suffix="×"
+                          disabled={!canEditPlan}
+                          onChange={(value) =>
+                            reviseSelectedClip({ volume: value })
+                          }
+                        />
+                        <InspectorValue
+                          icon={<Clock3 />}
+                          label="Timeline length"
+                          value={`${selectedSegment.durationSeconds.toFixed(1)}s`}
+                        />
+                        {reviewSession ? (
+                          <button
+                            className={`flex w-full items-center justify-between rounded-md border px-2.5 py-2 text-[10px] transition ${plan.timeline.captionsAssetId ? "border-violet-300/30 bg-violet-400/10 text-violet-200" : "border-white/10 text-zinc-500"}`}
+                            onClick={() =>
+                              setPlan(
+                                setPlanCaptionsEnabled(
+                                  plan,
+                                  !plan.timeline.captionsAssetId,
+                                ),
+                              )
+                            }
+                            disabled={
+                              !plan.assets.some(
+                                (asset) => asset.kind === "captions",
+                              ) ||
+                              !canEditPlan ||
+                              captionDraftDirty
+                            }
+                            aria-pressed={Boolean(
+                              plan.timeline.captionsAssetId,
+                            )}
+                          >
+                            <span className="flex items-center gap-1.5">
+                              <Captions className="size-3" /> Include captions
+                            </span>
+                            <span>
+                              {plan.timeline.captionsAssetId ? "On" : "Off"}
+                            </span>
+                          </button>
+                        ) : null}
+                      </InspectorSection>
+                      <ProductionInspector
+                        plan={plan}
+                        disabled={!canEditPlan || captionDraftDirty}
+                        planIsDirty={planIsDirty}
+                        captionGenerationLoading={captionGenerationLoading}
+                        captionGenerationError={captionGenerationError}
+                        captionGenerationResult={captionGenerationResult}
+                        systemCheck={systemCheck}
+                        systemCheckLoading={systemCheckLoading}
+                        systemCheckError={systemCheckError}
+                        selectedOverlayClipId={selectedOverlayClipId}
+                        selectedAudioTrackId={selectedAudioTrackId}
+                        selectedAudioClipId={selectedAudioClipId}
+                        selectedTransitionId={selectedTransitionId}
+                        selectedTitleCardId={selectedTitleCardId}
+                        onSelectOverlayClip={setSelectedOverlayClipId}
+                        onSelectAudioTrack={(trackId) => {
+                          setSelectedAudioTrackId(trackId)
+                          const track =
+                            plan.version === "2"
+                              ? plan.timeline.audioTracks.find(
+                                  (entry) => entry.id === trackId,
+                                )
+                              : undefined
+                          setSelectedAudioClipId(track?.clips[0]?.id ?? "")
+                        }}
+                        onSelectAudioClip={setSelectedAudioClipId}
+                        onSelectTransition={setSelectedTransitionId}
+                        onSelectTitleCard={setSelectedTitleCardId}
+                        onRunSystemCheck={() => void runSystemCheck()}
+                        onGenerateCaptions={() => void generateCaptions()}
+                        onApply={reviseProductionPlan}
+                      />
+                      <PreflightPanel
+                        preflight={activePreflight}
+                        loading={preflightLoading}
+                        error={preflightError}
+                        dirty={planIsDirty || captionDraftDirty}
+                      />
+                      {reviewSession && activeCandidate ? (
+                        <InspectorSection title="Reviewer notes & audit">
+                          <textarea
+                            className="min-h-16 w-full resize-y rounded-md border border-white/10 bg-black/30 p-2 text-[10px] text-zinc-200 outline-none focus:border-amber-300/50"
+                            value={reviewerNote}
+                            onChange={(event) =>
+                              setReviewerNote(event.target.value)
+                            }
+                            placeholder="Add a decision note for this revision"
+                            maxLength={2_000}
+                          />
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="w-full"
+                            disabled={!reviewerNote.trim()}
+                            onClick={() => void addReviewerNote()}
+                          >
+                            <MessageSquareText /> Save note
+                          </Button>
+                          <p className="text-[9px] leading-relaxed text-zinc-600">
+                            {
+                              reviewSession.reviewerNotes.filter(
+                                (note) =>
+                                  note.candidateId === activeCandidate.id,
+                              ).length
+                            }{" "}
+                            notes ·{" "}
+                            {
+                              reviewSession.events.filter(
+                                (event) =>
+                                  event.candidateId === activeCandidate.id,
+                              ).length
+                            }{" "}
+                            audit events
+                          </p>
+                          {reviewSession.events
+                            .filter(
+                              (event) =>
+                                event.candidateId === activeCandidate.id,
+                            )
+                            .slice(-3)
+                            .reverse()
+                            .map((event) => (
+                              <div
+                                key={event.id}
+                                className="border-l border-white/10 pl-2 text-[9px] text-zinc-500"
+                              >
+                                <p className="font-medium text-zinc-400">
+                                  {event.type.replaceAll("-", " ")} · r
+                                  {event.revision ?? activeCandidate.revision}
+                                </p>
+                                <p>{new Date(event.at).toLocaleString()}</p>
+                              </div>
+                            ))}
+                        </InspectorSection>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
-              <button
-                className={`mt-1 flex h-7 w-full items-center rounded border px-3 text-left text-[9px] transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                  captionsEnabled
-                    ? "border-violet-200/50 bg-violet-400/35 text-violet-100"
-                    : "border-violet-300/15 bg-violet-400/15 text-violet-200/75 hover:bg-violet-400/25"
-                }`}
-                disabled={!captionsAsset || captionsLoading || Boolean(captionsError) || captionCues.length === 0}
-                onClick={() => setCaptionsEnabled((enabled) => !enabled)}
-                aria-label={captionsEnabled ? "Hide caption preview" : "Show caption preview"}
-                aria-pressed={captionsEnabled}
-              >
-                <Captions className="mr-2 size-3" />
-                <span className="truncate">
-                  {captionsAsset ? captionsAsset.path.split("/").at(-1) : "No captions attached"}
-                </span>
-                <span className="ml-auto pl-3 font-semibold uppercase tracking-wider">
-                  {captionsLoading
-                    ? "Loading"
-                    : captionsError
-                      ? "Unavailable"
-                      : captionsEnabled
-                        ? "Preview on"
-                        : `${captionCues.length} cues · Preview off`}
-                </span>
-              </button>
-              <div className="pointer-events-none absolute bottom-0 left-2 top-5 w-px bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.8)]" />
-            </div>
-          </div>
-        </div>
-      </section>
-    </main>
-  )
-}
+                <div className="min-w-0 space-y-4">
+                  <h3 className="text-sm font-medium">Project files</h3>
+                  <div className="space-y-2 p-3">
+                    {plan.assets.map((asset) => (
+                      <div
+                        key={asset.id}
+                        className="group rounded-lg border border-white/8 bg-white/[0.025] p-2.5 hover:border-white/15 hover:bg-white/[0.04]"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <div className="grid size-9 shrink-0 place-items-center rounded-md bg-gradient-to-br from-zinc-700 to-zinc-900 text-zinc-300">
+                            {asset.kind === "video" ? (
+                              <Film className="size-4" />
+                            ) : asset.kind === "audio" ? (
+                              <Music2 className="size-4" />
+                            ) : (
+                              <Captions className="size-4" />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-medium">
+                              {asset.id}
+                            </p>
+                            <p className="mt-0.5 truncate text-[10px] uppercase tracking-wider text-zinc-600">
+                              {asset.kind}
+                            </p>
+                          </div>
+                        </div>
+                        <p
+                          className="mt-2 truncate text-[10px] text-zinc-600"
+                          title={asset.path}
+                        >
+                          {asset.path}
+                        </p>
+                      </div>
+                    ))}
 
-function PanelHeading({ icon, label }: { icon: React.ReactNode; label: string }) {
-  return (
-    <div className="flex h-10 items-center gap-2 border-b border-white/10 px-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500 [&_svg]:size-3.5">
-      {icon}
-      {label}
-    </div>
+                    {!reviewSession ? (
+                      <button
+                        className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-white/15 py-3 text-[11px] text-zinc-500 transition hover:border-amber-300/40 hover:text-amber-200"
+                        onClick={() => videoInputRef.current?.click()}
+                      >
+                        <FolderOpen className="size-3.5" />
+                        {videoName
+                          ? "Replace source video"
+                          : "Attach source video"}
+                      </button>
+                    ) : null}
+                  </div>
+
+                  {activeCandidate ? (
+                    <div className="space-y-2 rounded-lg border border-white/10 p-3">
+                      <p className="text-sm text-zinc-400">
+                        Saved version {activeCandidate.revision}
+                      </p>
+                      <label
+                        htmlFor="revision-note"
+                        className="text-xs text-zinc-400"
+                      >
+                        Change note (optional)
+                      </label>
+                      <input
+                        id="revision-note"
+                        className="w-full rounded border border-white/15 p-2 text-sm"
+                        value={revisionNote}
+                        onChange={(event) =>
+                          setRevisionNote(event.target.value)
+                        }
+                        maxLength={1000}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              <section
+                className={`${plan.version === "2" ? "h-60" : "h-44"} bg-[#111214]`}
+              >
+                <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
+                  <div className="flex items-center gap-3 text-[10px] text-zinc-500">
+                    <span className="font-medium uppercase tracking-[0.16em] text-zinc-300">
+                      Timeline
+                    </span>
+                    <span>{segments.length} clips</span>
+                    {plan.version === "2" ? (
+                      <span>
+                        {trackCounts.overlayTracks} overlay ·{" "}
+                        {trackCounts.audioTracks} audio ·{" "}
+                        {trackCounts.transitions} transitions
+                      </span>
+                    ) : null}
+                    <span>{formatTimecode(totalDuration)}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {!reviewSession ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setPlan(sampleEditPlan)
+                          setSelectedClipId(
+                            sampleEditPlan.timeline.clips[0]?.id ?? "",
+                          )
+                          resetProductionSelections(sampleEditPlan)
+                          setCurrentSourceTime(
+                            sampleEditPlan.timeline.clips[0]?.sourceStart ?? 0,
+                          )
+                          setReviewState("review")
+                          setApprovalResult(null)
+                          setApprovalError(null)
+                          setPlanError(null)
+                        }}
+                      >
+                        <RotateCcw /> Reset sample
+                      </Button>
+                    ) : null}
+                    <Button variant="ghost" size="sm" onClick={downloadPlan}>
+                      <Download /> Download plan
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="grid h-[calc(100%-2.5rem)] grid-cols-[84px_minmax(0,1fr)] overflow-hidden">
+                  <div className="border-r border-white/10 pt-7 text-[10px] text-zinc-600">
+                    <div className="flex h-11 items-center gap-2 border-y border-white/5 px-3">
+                      <Film className="size-3" /> Video 1
+                    </div>
+                    {plan.version === "2" ? (
+                      <div className="flex h-7 items-center gap-2 border-b border-white/5 px-3">
+                        <Layers3 className="size-3" /> Layers
+                      </div>
+                    ) : null}
+                    {plan.version === "2" ? (
+                      <div className="flex h-7 items-center gap-2 border-b border-white/5 px-3">
+                        <Sparkles className="size-3" /> Finish
+                      </div>
+                    ) : null}
+                    <div className="flex h-7 items-center gap-2 border-b border-white/5 px-3">
+                      <Captions className="size-3" /> Captions
+                    </div>
+                  </div>
+
+                  <div className="min-w-0 overflow-x-auto">
+                    <div className="relative min-w-[720px] px-2 pt-7">
+                      <TimelineRuler duration={totalDuration} />
+                      <div className="relative flex h-11 overflow-hidden rounded-md border border-white/10 bg-black/40">
+                        {segments.map((segment, index) => (
+                          <button
+                            key={segment.clip.id}
+                            className={`relative min-w-28 overflow-hidden border-r border-black/35 px-3 text-left transition ${
+                              segment.clip.id === selectedSegment?.clip.id
+                                ? "bg-amber-300 text-zinc-950 shadow-[inset_0_0_0_2px_rgba(255,255,255,0.55)]"
+                                : index % 2 === 0
+                                  ? "bg-amber-300/55 text-amber-50 hover:bg-amber-300/70"
+                                  : "bg-orange-300/45 text-orange-50 hover:bg-orange-300/60"
+                            }`}
+                            style={{
+                              width: `${(segment.durationSeconds / totalDuration) * 100}%`,
+                            }}
+                            onClick={() => selectSegment(segment)}
+                          >
+                            <span className="block truncate text-[10px] font-semibold">
+                              {humanizeId(segment.clip.id)}
+                            </span>
+                            <span
+                              className={`mt-0.5 block font-mono text-[9px] ${segment.clip.id === selectedSegment?.clip.id ? "text-zinc-700" : "text-white/55"}`}
+                            >
+                              {segment.durationSeconds.toFixed(1)}s ·{" "}
+                              {segment.clip.speed.toFixed(2)}×
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                      {plan.version === "2" ? (
+                        <div className="mt-1 flex h-7 items-center rounded border border-sky-300/15 bg-sky-400/10 px-3 text-[9px] text-sky-200/80">
+                          <Layers3 className="mr-2 size-3" />
+                          <span>
+                            {trackCounts.overlayClips} overlay clips across{" "}
+                            {trackCounts.overlayTracks} tracks
+                          </span>
+                          <span className="ml-auto">
+                            <Music2 className="mr-1 inline size-3" />
+                            {trackCounts.audioClips} mixed-audio clips
+                          </span>
+                        </div>
+                      ) : null}
+                      {plan.version === "2" ? (
+                        <div className="mt-1 flex h-7 items-center rounded border border-amber-300/15 bg-amber-300/10 px-3 text-[9px] text-amber-100/80">
+                          <Sparkles className="mr-2 size-3" />
+                          <span>
+                            {trackCounts.transitions} transitions ·{" "}
+                            {trackCounts.titleCards} title cards
+                          </span>
+                          <span className="ml-auto">
+                            {trackCounts.burnedCaptions
+                              ? "Styled burn-in captions"
+                              : "Selectable captions"}
+                            {trackCounts.ducking ? " · Smart ducking" : ""}
+                          </span>
+                        </div>
+                      ) : null}
+                      <button
+                        className={`mt-1 flex h-7 w-full items-center rounded border px-3 text-left text-[9px] transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                          captionsEnabled
+                            ? "border-violet-200/50 bg-violet-400/35 text-violet-100"
+                            : "border-violet-300/15 bg-violet-400/15 text-violet-200/75 hover:bg-violet-400/25"
+                        }`}
+                        disabled={
+                          !captionsAsset ||
+                          captionsLoading ||
+                          Boolean(captionsError) ||
+                          captionCues.length === 0
+                        }
+                        onClick={() =>
+                          setCaptionsEnabled((enabled) => !enabled)
+                        }
+                        aria-label={
+                          captionsEnabled
+                            ? "Hide caption preview"
+                            : "Show caption preview"
+                        }
+                        aria-pressed={captionsEnabled}
+                      >
+                        <Captions className="mr-2 size-3" />
+                        <span className="truncate">
+                          {captionsAsset
+                            ? captionsAsset.path.split("/").at(-1)
+                            : "No captions attached"}
+                        </span>
+                        <span className="ml-auto pl-3 font-semibold uppercase tracking-wider">
+                          {captionsLoading
+                            ? "Loading"
+                            : captionsError
+                              ? "Unavailable"
+                              : captionsEnabled
+                                ? "Preview on"
+                                : `${captionCues.length} cues · Preview off`}
+                        </span>
+                      </button>
+                      <div className="pointer-events-none absolute bottom-0 left-2 top-5 w-px bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.8)]" />
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </details>
+          </>
+        )}
+      </div>
+    </main>
   )
 }
 
@@ -2298,113 +2720,6 @@ function uniqueById<T>(items: T[], getId: (item: T) => string) {
   })
 }
 
-function ReviewWorkflowPanel({
-  activeCandidate,
-  planIsDirty,
-  captionDraftDirty,
-  hasCurrentPreview,
-  batchCandidateCount,
-  renderedCandidateCount,
-  latestBatch,
-  latestExportPackage,
-  preflightBlocks,
-  reviewState,
-}: {
-  activeCandidate: ReviewCandidate | undefined
-  planIsDirty: boolean
-  captionDraftDirty: boolean
-  hasCurrentPreview: boolean
-  batchCandidateCount: number
-  renderedCandidateCount: number
-  latestBatch: RenderBatch | undefined
-  latestExportPackage: ReviewExportPackage | null
-  preflightBlocks: number
-  reviewState: ReviewState
-}) {
-  const candidateSelected = Boolean(activeCandidate)
-  const revisionSaved = candidateSelected && !planIsDirty
-  const rendered = renderedCandidateCount > 0 || activeCandidate?.outputExists || activeCandidate?.status === "rendered"
-  const batchActive = latestBatch?.status === "queued" || latestBatch?.status === "rendering"
-  const packaged = Boolean(latestExportPackage)
-  const activeCandidateTitle = activeCandidate?.title ?? "Selected candidate"
-  const subtitleProvider = activeCandidate ? getSubtitleProvider(activeCandidate.plan) : null
-  const captionsReady = Boolean(activeCandidate?.plan.timeline.captionsAssetId) && !captionDraftDirty
-  const captionsNeedAttention = Boolean(subtitleProvider && !captionsReady && subtitleProvider.mode !== "provided-captions")
-  const steps = [
-    {
-      label: "1 Select",
-      done: candidateSelected,
-      active: !candidateSelected,
-      detail: candidateSelected ? activeCandidateTitle : "Pick one candidate to inspect. This does not render.",
-    },
-    {
-      label: "2 Save",
-      done: revisionSaved,
-      active: candidateSelected && planIsDirty,
-      detail: planIsDirty ? "Unsaved edits must become a new revision." : "Current revision is saved.",
-    },
-    {
-      label: "3 Captions",
-      done: captionsReady,
-      active: revisionSaved && (captionsNeedAttention || captionDraftDirty),
-      detail: captionDraftDirty
-        ? "Caption text/timing edits must be saved as a new revision."
-        : captionsReady
-        ? "Caption asset is attached."
-        : subtitleProvider
-          ? "Generate captions if this candidate needs subtitles."
-          : "Optional for plans without subtitles.",
-    },
-    {
-      label: "4 Preview",
-      done: hasCurrentPreview,
-      active: revisionSaved && !hasCurrentPreview,
-      detail: hasCurrentPreview ? "Preview matches this revision." : preflightBlocks > 0 ? `${preflightBlocks} blocker${preflightBlocks === 1 ? "" : "s"} before preview/final.` : "Render a fast preview before approval.",
-    },
-    {
-      label: "5 Approve",
-      done: Boolean(rendered),
-      active: hasCurrentPreview && !rendered,
-      detail: batchActive
-        ? "Batch render is running."
-        : batchCandidateCount > 0
-          ? `${batchCandidateCount} candidate${batchCandidateCount === 1 ? "" : "s"} staged for batch approval.`
-          : "Approve final for one candidate or add preview-ready candidates to batch.",
-    },
-    {
-      label: "6 Export",
-      done: packaged,
-      active: Boolean(rendered) && !packaged,
-      detail: packaged ? "Local package created." : rendered ? "Package rendered outputs for handoff." : "Available after render.",
-    },
-  ]
-
-  return (
-    <div className="mb-3 grid gap-2 rounded-lg border border-white/10 bg-black/20 p-3 md:grid-cols-2 xl:grid-cols-6">
-      {steps.map((step) => (
-        <div
-          key={step.label}
-          className={`rounded-md border p-2 ${
-            step.done
-              ? "border-emerald-400/25 bg-emerald-400/[0.06]"
-              : step.active
-                ? "border-amber-300/30 bg-amber-300/[0.08]"
-                : "border-white/8 bg-white/[0.025]"
-          }`}
-        >
-          <p className={`flex items-center gap-1.5 text-[10px] font-semibold ${
-            step.done ? "text-emerald-300" : step.active ? "text-amber-200" : "text-zinc-500"
-          }`}>
-            {step.done ? <Check className="size-3" /> : reviewState === "previewing" || reviewState === "rendering" ? <LoaderCircle className="size-3 animate-spin" /> : <span className="size-1.5 rounded-full bg-current" />}
-            {step.label}
-          </p>
-          <p className="mt-1 line-clamp-2 text-[9px] leading-relaxed text-zinc-500">{step.detail}</p>
-        </div>
-      ))}
-    </div>
-  )
-}
-
 function CaptionQaPanel({
   captionsPath,
   cues,
@@ -2436,42 +2751,55 @@ function CaptionQaPanel({
   onReset: () => void
   onSave: () => void
 }) {
-  const invalidCue = cues.find((cue) =>
-    !Number.isFinite(cue.start) ||
-    !Number.isFinite(cue.end) ||
-    cue.end <= cue.start ||
-    !cue.text.trim(),
+  const invalidCue = cues.find(
+    (cue) =>
+      !Number.isFinite(cue.start) ||
+      !Number.isFinite(cue.end) ||
+      cue.end <= cue.start ||
+      !cue.text.trim(),
   )
-  const canSave = Boolean(captionsPath && dirty && !disabled && !saving && !invalidCue)
+  const canSave = Boolean(
+    captionsPath && dirty && !disabled && !saving && !invalidCue,
+  )
 
   return (
-    <InspectorSection title="Caption QA">
+    <InspectorSection title="Caption corrections">
       {!captionsPath ? (
-        <div className="rounded-lg border border-white/10 bg-black/25 p-3 text-[10px] leading-relaxed text-zinc-500">
-          Generate or attach captions first, then use this panel to correct subtitle text and timing before preview/final render.
+        <div className="rounded-lg border border-white/10 bg-black/25 p-3 text-xs leading-relaxed text-zinc-500">
+          Generate or attach captions first, then use this panel to correct
+          subtitle text and timing before preview/final render.
         </div>
       ) : loading ? (
-        <div className="rounded-lg border border-white/10 bg-black/25 p-3 text-[10px] text-zinc-500">
+        <div className="rounded-lg border border-white/10 bg-black/25 p-3 text-xs text-zinc-500">
           Loading caption cues…
         </div>
       ) : error ? (
-        <div className="rounded-lg border border-red-400/20 bg-red-400/10 p-3 text-[10px] leading-relaxed text-red-200">
+        <div className="rounded-lg border border-red-400/20 bg-red-400/10 p-3 text-xs leading-relaxed text-red-200">
           {error}
         </div>
       ) : (
         <div className="space-y-2.5">
           <div className="rounded-lg border border-violet-300/15 bg-violet-400/[0.06] p-3">
-            <p className="text-[10px] font-semibold text-violet-100">{captionsPath.split("/").at(-1)}</p>
-            <p className="mt-1 text-[9px] leading-relaxed text-zinc-500">
-              {sourceCues.length} cue{sourceCues.length === 1 ? "" : "s"} loaded. Saving creates a new candidate revision and clears stale previews.
+            <p className="text-xs font-semibold text-violet-100">
+              {captionsPath.split("/").at(-1)}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+              {sourceCues.length} cue{sourceCues.length === 1 ? "" : "s"}{" "}
+              loaded. Saving creates a new candidate revision and clears stale
+              previews.
             </p>
           </div>
           <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
             {cues.map((cue, index) => (
-              <div key={`${cue.start}-${cue.end}-${index}`} className="rounded-lg border border-white/10 bg-black/25 p-2">
-                <div className="mb-2 flex items-center justify-between text-[9px] text-zinc-600">
+              <div
+                key={`${cue.start}-${cue.end}-${index}`}
+                className="rounded-lg border border-white/10 bg-black/25 p-2"
+              >
+                <div className="mb-2 flex items-center justify-between text-xs text-zinc-600">
                   <span>cue {index + 1}</span>
-                  <span>{formatTimecode(cue.start)} → {formatTimecode(cue.end)}</span>
+                  <span>
+                    {formatTimecode(cue.start)} → {formatTimecode(cue.end)}
+                  </span>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <NumberEditor
@@ -2492,48 +2820,58 @@ function CaptionQaPanel({
                   />
                 </div>
                 <textarea
-                  className="mt-2 min-h-16 w-full resize-y rounded-md border border-white/10 bg-black/30 p-2 text-[11px] leading-relaxed text-zinc-200 outline-none placeholder:text-zinc-700 disabled:text-zinc-500"
+                  aria-label={`Caption ${index + 1} text`}
+                  className="mt-2 min-h-16 w-full resize-y rounded-md border border-white/10 bg-black/30 p-2 text-sm leading-relaxed text-zinc-200 outline-none placeholder:text-zinc-700 disabled:text-zinc-500"
                   value={cue.text}
                   disabled={disabled || saving}
-                  onChange={(event) => onChangeCue(index, { text: event.target.value })}
+                  onChange={(event) =>
+                    onChangeCue(index, { text: event.target.value })
+                  }
                 />
               </div>
             ))}
           </div>
           {planIsDirty ? (
-            <p className="rounded border border-amber-300/20 bg-amber-300/10 p-2 text-[9px] leading-relaxed text-amber-100/80">
+            <p className="rounded border border-amber-300/20 bg-amber-300/10 p-2 text-xs leading-relaxed text-amber-100/80">
               Save timeline/style changes before saving caption QA edits.
             </p>
           ) : invalidCue ? (
-            <p className="rounded border border-red-400/20 bg-red-400/10 p-2 text-[9px] leading-relaxed text-red-200">
-              Each cue needs non-empty text and an end time after the start time.
+            <p className="rounded border border-red-400/20 bg-red-400/10 p-2 text-xs leading-relaxed text-red-200">
+              Each cue needs non-empty text and an end time after the start
+              time.
             </p>
           ) : null}
           {saveError ? (
-            <p className="rounded border border-red-400/20 bg-red-400/10 p-2 text-[9px] leading-relaxed text-red-200">
+            <p className="rounded border border-red-400/20 bg-red-400/10 p-2 text-xs leading-relaxed text-red-200">
               {saveError}
             </p>
           ) : null}
           {saveResult ? (
-            <p className="rounded border border-emerald-300/15 bg-emerald-300/[0.06] p-2 text-[9px] leading-relaxed text-emerald-100/85">
-              Saved {saveResult.cues} cue{saveResult.cues === 1 ? "" : "s"} to {saveResult.captionsPath}. Render a fresh preview before final approval.
+            <p className="rounded border border-emerald-300/15 bg-emerald-300/[0.06] p-2 text-xs leading-relaxed text-emerald-100/85">
+              Saved {saveResult.cues} cue{saveResult.cues === 1 ? "" : "s"} to{" "}
+              {saveResult.captionsPath}. Render a fresh preview before final
+              approval.
             </p>
           ) : null}
           <div className="grid grid-cols-2 gap-2">
             <button
-              className="rounded-md border border-white/10 bg-black/25 px-3 py-2 text-[10px] font-medium text-zinc-400 transition hover:border-white/25 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-45"
+              className="rounded-md border border-white/10 bg-black/25 px-3 py-2 text-xs font-medium text-zinc-400 transition hover:border-white/25 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-45"
               disabled={!dirty || saving}
               onClick={onReset}
             >
-              Reset
+              Discard changes
             </button>
             <button
-              className="inline-flex items-center justify-center gap-2 rounded-md border border-violet-300/25 bg-violet-400/12 px-3 py-2 text-[10px] font-semibold text-violet-100 transition hover:border-violet-200/45 hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-45"
+              className="inline-flex items-center justify-center gap-2 rounded-md border border-violet-300/25 bg-violet-400/12 px-3 py-2 text-xs font-semibold text-violet-100 transition hover:border-violet-200/45 hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-45"
               disabled={!canSave}
               onClick={onSave}
             >
-              {saving ? <LoaderCircle className="size-3 animate-spin" /> : <Save className="size-3" />}
-              {saving ? "Saving…" : "Save caption revision"}
+              {saving ? (
+                <LoaderCircle className="size-3 animate-spin" />
+              ) : (
+                <Save className="size-3" />
+              )}
+              {saving ? "Saving…" : "Save caption changes"}
             </button>
           </div>
         </div>
@@ -2554,65 +2892,82 @@ function PreflightPanel({
   dirty: boolean
 }) {
   const checks = preflight?.checks ?? []
-  const visibleChecks = checks.filter((check) => check.severity !== "pass").slice(0, 4)
+  const visibleChecks = checks
+    .filter((check) => check.severity !== "pass")
+    .slice(0, 4)
   const blocked = (preflight?.summary.block ?? 0) > 0
   const warned = (preflight?.summary.warn ?? 0) > 0
   return (
-    <InspectorSection title="Preflight">
-      <div className={`rounded-lg border p-3 ${
-        dirty
-          ? "border-amber-300/20 bg-amber-300/[0.06]"
-          : blocked
-            ? "border-red-400/25 bg-red-400/8"
-            : warned
-              ? "border-amber-300/20 bg-amber-300/[0.06]"
-              : "border-emerald-400/20 bg-emerald-400/8"
-      }`}>
-        <p className={`flex items-center gap-2 text-xs font-medium ${
+    <InspectorSection title="Readiness check">
+      <div
+        className={`rounded-lg border p-3 ${
           dirty
-            ? "text-amber-200"
-            : blocked
-              ? "text-red-300"
+            ? "border-amber-300/20 bg-amber-300/[0.06]"
+            : blocked || error
+              ? "border-red-400/25 bg-red-400/8"
               : warned
-                ? "text-amber-200"
-                : "text-emerald-300"
-        }`}>
+                ? "border-amber-300/20 bg-amber-300/[0.06]"
+                : "border-emerald-400/20 bg-emerald-400/8"
+        }`}
+      >
+        <p
+          className={`flex items-center gap-2 text-xs font-medium ${
+            dirty
+              ? "text-amber-200"
+              : blocked || error
+                ? "text-red-300"
+                : warned
+                  ? "text-amber-200"
+                  : "text-emerald-300"
+          }`}
+        >
           {loading ? (
             <LoaderCircle className="size-3.5 animate-spin" />
-          ) : dirty || blocked ? (
+          ) : dirty || blocked || error ? (
             <CircleAlert className="size-3.5" />
           ) : (
             <Check className="size-3.5" />
           )}
           {dirty
-            ? "Save revision first"
+            ? "Save changes first"
             : loading
               ? "Checking"
-              : blocked
-                ? `${preflight?.summary.block ?? 0} blocker${preflight?.summary.block === 1 ? "" : "s"}`
-                : warned
-                  ? `${preflight?.summary.warn ?? 0} warning${preflight?.summary.warn === 1 ? "" : "s"}`
-                  : "Ready"}
+              : error
+                ? "Check failed"
+                : blocked
+                  ? `${preflight?.summary.block ?? 0} blocker${preflight?.summary.block === 1 ? "" : "s"}`
+                  : warned
+                    ? `${preflight?.summary.warn ?? 0} warning${preflight?.summary.warn === 1 ? "" : "s"}`
+                    : "Ready"}
         </p>
-        <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
+        <p className="mt-1.5 text-xs leading-relaxed text-zinc-500">
           {dirty
-            ? "Preflight runs against saved revisions. Save this edit before preview or final render."
+            ? "Save your changes before rendering a new preview."
             : error
               ? error
               : preflight
-                ? `${preflight.mode} preflight checked ${preflight.summary.pass} passing rule${preflight.summary.pass === 1 ? "" : "s"}.`
-                : "No saved review candidate is active."}
+                ? "Source files, captions, and output settings checked."
+                : "Choose and save a clip to check it."}
         </p>
         {visibleChecks.length > 0 ? (
           <div className="mt-2 space-y-1.5">
             {visibleChecks.map((check) => (
-              <div key={check.id} className="rounded border border-white/8 bg-black/25 p-2">
-                <p className={`text-[9px] font-semibold uppercase tracking-[0.14em] ${
-                  check.severity === "block" ? "text-red-300" : "text-amber-200"
-                }`}>
+              <div
+                key={check.id}
+                className="rounded border border-white/8 bg-black/25 p-2"
+              >
+                <p
+                  className={`text-xs font-semibold uppercase tracking-[0.14em] ${
+                    check.severity === "block"
+                      ? "text-red-300"
+                      : "text-amber-200"
+                  }`}
+                >
                   {check.label}
                 </p>
-                <p className="mt-1 text-[9px] leading-relaxed text-zinc-500">{check.detail}</p>
+                <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+                  {check.detail}
+                </p>
               </div>
             ))}
           </div>
@@ -3212,21 +3567,4 @@ function humanizeId(value: string) {
     .filter(Boolean)
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join(" ")
-}
-
-function candidateStrategyLabel(value: ReviewCandidate["strategy"]) {
-  switch (value) {
-    case "distinct-moment":
-      return "Distinct moment"
-    case "narrative-segment":
-      return "One narrative split into segments"
-    case "social-variant":
-      return "Format/style variant"
-    case "archive-summary":
-      return "Context/archive summary"
-    case "manual":
-      return "Manual reviewer candidate"
-    default:
-      return "Agent-proposed candidate"
-  }
 }
