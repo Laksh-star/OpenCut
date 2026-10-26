@@ -130,3 +130,34 @@ historical runtime validation is only reported where separately recorded.
   [verification/2026-10-26-review-ux.md](verification/2026-10-26-review-ux.md).
 - Delivered on the existing fork branch `codex/agent-bridge-mvp`; this is a local
   UI update, not a public release or new native-editor feature set.
+
+## 2026-10-26 — Main video projects and editor
+
+- Replaced the empty home with a persistent local project library and implemented
+  `/editor?project=<id>` for full-length projects. Existing clip review URLs remain
+  supported through the shared review workspace.
+- Added a visible main timeline, split at playhead, proposed trim/remove/reorder,
+  full transcript editing, media append, image watermarks, ducked music, titles,
+  supplied SRT/VTT captions and production-layer removal. Main projects can create
+  independent child clip reviews from saved timeline ranges.
+- Reused immutable revisions and separate preview/final approval. Added final
+  playback/download, editable copies of rendered masters, parent snapshot locks,
+  restore across media imports, and stable reopening after a service restart.
+- Added full-project rendering up to four hours; oversized finals are blocked
+  instead of silently capped at five minutes. Caption sets above 40 cues use a
+  single transparent track; removed the old 200-cue burn-in ceiling. Finals publish
+  atomically after successful FFmpeg completion; failed jobs do not appear complete.
+- Added `opencut-studio`, strict port checks and coupled service shutdown. Updated
+  the main editor guide and API/user docs; private bridge version is 0.11.0.
+- Validation: 66 bridge + 24 web tests, both typechecks/builds, generated 301 s HTTP
+  preview/final/export/download/restart smoke with 201 captions and a PNG watermark,
+  and existing editorial/review smokes. Browser exercised import/save/split/reorder,
+  child creation, multi-source playback, rich 10 s export and an editable copy.
+  Desktop/mobile layouts were inspected; expanded mobile controls had no overflow.
+- Prepared a separate 19m49s podcast master with 357 reused local English cues and
+  the DB watermark. Rechecked the source hash; preflight passed with zero blockers.
+  No external transcription or podcast preview/final render occurred. Existing
+  clip selection, revisions, audit events and rendered outputs remain unchanged.
+- This is the local FFmpeg-backed main editor. Native timeline gestures, waveforms,
+  keyframes, native file picking and detailed long-render progress remain future
+  work. See [verification/2026-10-26-main-editor.md](verification/2026-10-26-main-editor.md).

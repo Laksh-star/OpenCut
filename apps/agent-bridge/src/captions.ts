@@ -23,7 +23,7 @@ export const captionCueSchema = z.object({
   speaker: z.string().trim().min(1).max(120).optional(),
 }).refine((cue) => cue.end > cue.start, { message: "Caption cue end must be after start" });
 
-export const captionCuesSchema = z.array(captionCueSchema).min(1).max(500);
+export const captionCuesSchema = z.array(captionCueSchema).min(1).max(10_000);
 
 export type CaptionCue = z.infer<typeof captionCueSchema>;
 

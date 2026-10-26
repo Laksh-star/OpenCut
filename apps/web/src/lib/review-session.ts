@@ -85,6 +85,7 @@ export type ReviewExportPackage = {
   warnings: string[]
 }
 export type ReviewSession = {
+  kind?: "clip-review" | "full-project"
   version: "1"
   id: string
   title: string

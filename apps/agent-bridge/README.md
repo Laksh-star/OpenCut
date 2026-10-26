@@ -329,3 +329,27 @@ while the manifest's selected, batch, and rendered state remains on disk.
 See [USER_GUIDE.md](USER_GUIDE.md) for a concise reviewer workflow and the
 current product gaps around new layer creation, keyframes, and caption-quality
 repair.
+
+## Main-project API (0.11.0)
+
+- `GET /v1/workspace-projects`: library records and the configured media root.
+- `POST /v1/workspace-projects`: create `{name, sourcePath}` with a full-length v2 plan.
+- `POST /v1/workspace-projects/:id/open`: register a fresh opaque session for a stable project.
+- `POST /v1/workspace-projects/:id/media`: inspect/import `{path}` inside the media root.
+- `POST /v1/workspace-projects/:id/clips`: create `{title, start, end, expectedRevision}`
+  as an isolated child review; snapshot locks exclude concurrent saves.
+- `POST /v1/workspace-projects/:id/duplicate`: create a new editable master/output folder.
+- `GET /v1/review-sessions/:session/candidates/:candidate/output`: stream an existing
+  final; `?download=1` supplies an attachment filename and supports byte ranges.
+
+Existing session edit/caption/preview/final/export endpoints are reused. Full
+projects have `kind: "full-project"`; old manifests default to `clip-review`.
+Full-project render limits can reach 14,400 seconds; clip defaults remain unchanged.
+Full-project saves can add media and change canvas settings, while asset identity,
+revision checks, output isolation and final immutability remain enforced. Caption
+coverage invalidated by added footage must be updated before preview/final export.
+See [MAIN_EDITOR_GUIDE.md](MAIN_EDITOR_GUIDE.md).
+
+`bun run smoke:project` exercises a 301-second generated project with 201 captions,
+PNG watermark, title, preview/final separation, download, derived clip, package,
+editable copy and reopening after a server restart.

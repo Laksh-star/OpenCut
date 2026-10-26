@@ -16,7 +16,7 @@ export const Route = createRootRoute({
         content: 'width=device-width, initial-scale=1',
       },
       {
-        title: 'OpenCut Agent Review',
+        title: 'OpenCut — Video workspace',
       },
     ],
     links: [

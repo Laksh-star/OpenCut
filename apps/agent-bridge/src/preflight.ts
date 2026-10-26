@@ -136,6 +136,9 @@ const buildCandidatePreflight = async (
     check(candidate, "plan:valid", "pass", "Plan schema", `Edit-plan v${candidate.plan.version} parsed successfully.`),
   ];
   checks.push(...await readableAssetChecks(root, candidate));
+  if (session.kind === "full-project" && candidate.plan.version === "2" && candidate.plan.timeline.captionsAssetId && candidate.plan.timeline.subtitleProvider?.status === "needs-generation") {
+    checks.push(check(candidate, "captions:outdated", "block", "Captions need updating", "This edit changed the speech covered by the captions. Attach a complete SRT or regenerate captions before rendering."));
+  }
 
   if (candidate.status === "queued" || candidate.status === "rendering") {
     checks.push(check(candidate, "candidate:busy", "block", "Candidate state", "This candidate is already queued or rendering."));
@@ -146,11 +149,11 @@ const buildCandidatePreflight = async (
   }
 
   const durationSeconds = getPlanDuration(candidate.plan);
-  if (durationSeconds > renderLimitSeconds) {
+  if (mode !== "export" && durationSeconds > renderLimitSeconds) {
     checks.push(check(
       candidate,
       "timeline:render-limit",
-      "warn",
+      mode === "final" || mode === "batch" || session.kind === "full-project" ? "block" : "warn",
       "Render limit",
       `Timeline is ${durationSeconds.toFixed(1)}s; this action is limited to ${renderLimitSeconds.toFixed(1)}s.`,
     ));

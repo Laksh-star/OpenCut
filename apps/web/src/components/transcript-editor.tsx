@@ -16,6 +16,7 @@ import type { ReviewSession } from "#/lib/review-session.ts"
 type Proposal = EditorialProposal & { proposalId: string; revision: number }
 type SilenceResult = { ranges: TimeRange[]; warning: string; revision: number }
 type Props = {
+  subject?: "clip" | "edit"
   bridgeUrl: string
   sessionId: string
   candidateId: string
@@ -39,7 +40,7 @@ export function TranscriptEditor(props: Props) {
   const [protectedCues, setProtectedCues] = useState<number[]>([])
   const [targetSeconds, setTargetSeconds] = useState(() => {
     const initialDuration = editorialSegments(props.plan).at(-1)?.end ?? 0
-    return String(Math.max(1, Math.min(45, Math.floor(initialDuration * 0.8))))
+    return String(props.subject === "edit" ? Math.max(1, Math.floor(initialDuration * 0.9)) : Math.max(1, Math.min(45, Math.floor(initialDuration * 0.8))))
   })
   const [command, setCommand] = useState("")
   const [proposal, setProposal] = useState<Proposal | null>(null)
@@ -217,7 +218,7 @@ export function TranscriptEditor(props: Props) {
             ) : (
               <p className="p-3 text-xs text-zinc-500">
                 No transcript is available yet. Open Advanced to attach or
-                generate captions, or shorten the clip below.
+                generate captions, or shorten the {props.subject ?? "clip"} below.
               </p>
             )}
           </div>
@@ -275,7 +276,7 @@ export function TranscriptEditor(props: Props) {
                 Number(targetSeconds) >= duration
               }
             >
-              Shorten clip
+              Shorten {props.subject ?? "clip"}
             </button>
           </form>
           <details className="mt-4 border-t border-white/10 pt-3">

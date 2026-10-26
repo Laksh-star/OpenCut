@@ -1,4 +1,7 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+
+const activeProcesses = new Set<ChildProcess>();
+export const stopMediaProcesses = () => { for (const child of activeProcesses) child.kill("SIGTERM"); };
 
 export type ProcessResult = {
   exitCode: number;
@@ -14,6 +17,9 @@ export const runProcess = (
   new Promise<ProcessResult>((resolvePromise, rejectPromise) => {
     const maxOutputBytes = options.maxOutputBytes ?? 2_000_000;
     const child = spawn(command, args, { shell: false, stdio: ["ignore", "pipe", "pipe"] });
+    activeProcesses.add(child);
+    child.once("close", () => activeProcesses.delete(child));
+    child.once("error", () => activeProcesses.delete(child));
     const timeout = options.timeoutMs ? setTimeout(() => {
       child.kill("SIGKILL");
       rejectPromise(new Error(`${command} exceeded the analysis time limit`));

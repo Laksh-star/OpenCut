@@ -44,6 +44,10 @@ const pushTrimmedInput = (
   clip: { sourceStart: number; sourceEnd: number },
   path: string,
 ) => {
+  if (/\.(png|jpe?g|webp)$/i.test(path)) {
+    args.push("-loop", "1", "-t", formatNumber(inputDuration(clip)), "-i", path);
+    return;
+  }
   args.push(
     "-ss",
     formatNumber(clip.sourceStart),
@@ -318,12 +322,15 @@ const compileV2 = (
     return left.timelineStart - right.timelineStart;
   });
   for (const [graphicNumber, graphic] of sortedGraphics.entries()) {
+    if (graphic.video) pushTrimmedInput(args, { sourceStart: 0, sourceEnd: graphic.duration }, graphic.path);
+    else {
     args.push(
       "-loop", "1",
       "-framerate", formatNumber(plan.project.frameRate),
       "-t", formatNumber(graphic.duration),
       "-i", graphic.path,
     );
+    }
     const graphicLabel = `graphic${graphicNumber}`;
     const nextCanvasLabel = `graphiccanvas${graphicNumber}`;
     filterParts.push(

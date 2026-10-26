@@ -4,6 +4,9 @@ This guide is for the person reviewing clips that an AI agent prepared. The
 current workflow is local-first: source media stays on the machine, and no
 render, export, or publication happens unless you explicitly approve it.
 
+For the complete-video workflow, see [Main video workspace](MAIN_EDITOR_GUIDE.md).
+The app home lists main projects and saved clip reviews.
+
 ## What the agent does
 
 The agent prepares a `review-session.json` with one or more isolated candidate

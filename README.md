@@ -84,6 +84,24 @@ Generate the local environment and Codex MCP configuration snippet with:
 apps/agent-bridge/bin/opencut-setup --root "/absolute/path/to/video-workspace"
 ```
 
+## Main video workspace
+
+The local app now opens a persistent project library. Create a full-length project
+from an existing local video, reopen it through a stable project link, arrange
+and split its timeline, edit with the transcript, add media/music/watermarks/titles/
+captions, and separately preview and approve the full export. Short clip reviews
+can be created inside the main project without changing the master edit.
+
+```sh
+OPENCUT_AGENT_ROOT="/absolute/path/to/media-folder" \
+  apps/agent-bridge/bin/opencut-studio
+```
+
+Main projects support up to four hours and retain saved revisions after a restart.
+Sources stay in place. Existing candidate-review links and launchers remain
+supported. See [the main editor guide](apps/agent-bridge/MAIN_EDITOR_GUIDE.md) for
+controls, export gates, and current editor limitations.
+
 ## Agent candidate review workspace
 
 The web app now provides the first visual seam between agent-generated edit
@@ -107,7 +125,7 @@ In the review workspace you can:
    three different editorial options unless the agent explicitly marks a
    narrative-segment candidate.
 3. Select a candidate without authorizing a render.
-4. Follow the visible six-step workflow: select, save, captions, preview, approve, export.
+4. Follow Choose clips → Edit → Review & export; preview and final approval remain separate.
 5. Stream even multi-gigabyte local source media with byte-range requests.
 6. Select timeline clips to seek to their exact source in/out points.
 7. Adjust in/out points, ordering, speed, volume, and caption inclusion.

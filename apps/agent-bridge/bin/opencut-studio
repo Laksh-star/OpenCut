@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+PACKAGE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec "$PACKAGE_ROOT/bin/opencut-run" "$PACKAGE_ROOT/scripts/start-review.ts" --studio

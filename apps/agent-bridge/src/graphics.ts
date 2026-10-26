@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, access, rename } from "node:fs/promises";
 import { join } from "node:path";
 
 import sharp from "sharp";
+import { runProcess } from "./media.ts";
 
 import type { ResolvedAsset } from "./ffmpeg.ts";
 import type { EditPlanV2 } from "./schema.ts";
@@ -13,10 +14,11 @@ export type PreparedGraphic = {
   path: string;
   timelineStart: number;
   duration: number;
+  video?: boolean;
 };
 
 type CaptionCue = { start: number; end: number; text: string };
-const MAX_BURNED_CAPTION_CUES = 200;
+const MAX_BURNED_CAPTION_CUES = 10_000;
 
 const escapeXml = (value: string) => value
   .replaceAll("&", "&amp;")
@@ -199,6 +201,36 @@ export const preparePlanGraphics = async (
       await renderSvg(captionSvg(plan, cue), path);
       graphics.push({ id: `caption-${index + 1}`, kind: "caption", path, timelineStart: cue.start, duration: cue.end - cue.start });
     }
+    // A single transparent caption movie keeps long projects from opening
+    // hundreds of looping image inputs at once. Small clip graphs stay unchanged.
+    if (cues.length > 40) {
+      const captionGraphics = graphics.filter((graphic) => graphic.kind === "caption");
+      const moviePath = join(directory, "caption-track.mov");
+      let cached = false;
+      try { await access(moviePath); cached = true; } catch {}
+      if (!cached) {
+        const blankPath = join(directory, "caption-blank.png");
+        await sharp({ create: { width: plan.project.width, height: plan.project.height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toFile(blankPath);
+        const entries: string[] = [];
+        const escape = (value: string) => value.replaceAll("'", "'\\''");
+        const append = (path: string, duration: number) => entries.push(`file '${escape(path)}'\noption framerate ${plan.project.frameRate}\nduration ${duration.toFixed(6)}`);
+        let cursor = 0;
+        for (const graphic of captionGraphics) {
+          if (graphic.timelineStart < cursor - 0.001) throw new Error("Long-project caption passages must not overlap; correct their timing before rendering");
+          if (graphic.timelineStart > cursor) append(blankPath, graphic.timelineStart - cursor);
+          append(graphic.path, graphic.duration);
+          cursor = graphic.timelineStart + graphic.duration;
+        }
+        entries.push(`file '${escape(blankPath)}'\noption framerate ${plan.project.frameRate}`);
+        const listPath = join(directory, "caption-track.ffconcat");
+        await writeFile(listPath, `ffconcat version 1.0\n${entries.join("\n")}\n`);
+        const result = await runProcess("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", listPath, "-r", String(plan.project.frameRate), "-t", String(cursor), "-vf", "format=argb", "-c:v", "qtrle", `${moviePath}.preparing.mov`]);
+        if (result.exitCode !== 0) throw new Error(`Caption track preparation failed: ${result.stderr}`);
+        await rename(`${moviePath}.preparing.mov`, moviePath);
+      }
+      return [...graphics.filter((graphic) => graphic.kind !== "caption"), { id: "caption-track", kind: "caption", path: moviePath, timelineStart: 0, duration: cues.at(-1)!.end, video: true }];
+    }
+
   }
 
   return graphics;

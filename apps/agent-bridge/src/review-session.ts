@@ -124,6 +124,7 @@ export const exportPackageSchema = z.object({
 
 export const reviewSessionSchema = z.object({
   version: z.literal("1"),
+  kind: z.enum(["clip-review", "full-project"]).default("clip-review"),
   id: identifier,
   title: z.string().min(1).max(160),
   sourceAssets: z.array(z.object({
@@ -279,6 +280,13 @@ export class ReviewSessionRegistry {
 
   isEditing(sessionId: string) { return this.editingSessions.has(this.get(sessionId).manifestPath); }
 
+  async withProjectSnapshot<T>(manifestPath: string, action: () => Promise<T>): Promise<T> {
+    const key = await resolveInputPath(await getWorkspaceRoot(), manifestPath);
+    if (this.editingSessions.has(key)) throw new StaleRevisionError("The main edit is being saved. Refresh before creating a clip or copy.");
+    this.editingSessions.add(key);
+    try { return await action(); } finally { this.editingSessions.delete(key); }
+  }
+
   async proposeEdit(sessionId: string, candidateId: string, expectedRevision: number, operation: EditorialOperation, protectedRanges: TimeRange[] = []) {
     const loaded = await this.load(sessionId);
     const candidate = loaded.candidates.find((entry) => entry.id === candidateId);
@@ -423,10 +431,17 @@ export class ReviewSessionRegistry {
     const nextPlan = editPlanSchema.parse(value);
     assertCandidateOutput(candidate, nextPlan.output.path);
     const protectedAssets = (plan: EditPlan) => options.captionAssetsAllowed ? plan.assets.filter((asset) => asset.kind !== "captions") : plan.assets;
-    if (JSON.stringify(protectedAssets(nextPlan)) !== JSON.stringify(protectedAssets(currentPlan))) {
+    if (session.kind === "full-project") {
+      for (const asset of nextPlan.assets) await resolveInputPath(root, asset.path);
+      for (const asset of protectedAssets(currentPlan)) {
+        const next = nextPlan.assets.find((entry) => entry.id === asset.id);
+        if (next && (next.path !== asset.path || next.kind !== asset.kind)) throw new Error("Existing media references are immutable; add a new asset instead");
+      }
+    }
+    if (session.kind !== "full-project" && JSON.stringify(protectedAssets(nextPlan)) !== JSON.stringify(protectedAssets(currentPlan))) {
       throw new Error("Review revisions cannot replace candidate assets");
     }
-    if (JSON.stringify(nextPlan.project) !== JSON.stringify(currentPlan.project)) {
+    if (session.kind !== "full-project" && JSON.stringify(nextPlan.project) !== JSON.stringify(currentPlan.project)) {
       throw new Error("Review revisions cannot replace project settings");
     }
     if (JSON.stringify(nextPlan.output) !== JSON.stringify(currentPlan.output)) {
@@ -447,6 +462,7 @@ export class ReviewSessionRegistry {
     return this.update(sessionId, (current) => ({
       ...current,
       updatedAt: new Date().toISOString(),
+      sourceAssets: session.kind === "full-project" ? nextPlan.assets.filter((asset) => asset.kind !== "captions").map((asset) => ({ id: asset.id, path: asset.path, label: posix.basename(asset.path).slice(0, 120) })) : current.sourceAssets,
       candidates: current.candidates.map((entry) => entry.id === candidateId ? {
         ...entry,
         revision: nextRevision,
@@ -644,7 +660,7 @@ export class ReviewSessionRegistry {
         },
       },
     });
-    if (JSON.stringify(nextPlan.project) !== JSON.stringify(currentPlan.project)) {
+    if (session.kind !== "full-project" && JSON.stringify(nextPlan.project) !== JSON.stringify(currentPlan.project)) {
       throw new Error("Caption revisions cannot replace project settings");
     }
     if (JSON.stringify(nextPlan.output) !== JSON.stringify(currentPlan.output)) {

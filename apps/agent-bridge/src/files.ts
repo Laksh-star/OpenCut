@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
@@ -11,7 +12,7 @@ export const readEditPlan = async (path: string) => {
 export const writeJsonFile = async (path: string, value: unknown) => {
   const temporaryPath = join(
     dirname(path),
-    `.${basename(path)}.${process.pid}.${Date.now()}.tmp`
+    `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`
   );
   await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
     encoding: "utf8",

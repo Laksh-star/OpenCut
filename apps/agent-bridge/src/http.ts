@@ -8,6 +8,7 @@ import { extname, posix } from "node:path";
 
 import { z } from "zod/v4";
 
+import { stopMediaProcesses } from "./media.ts";
 import { captionCuesSchema } from "./captions.ts";
 import { getWorkspaceRoot, resolveInputPath } from "./paths.ts";
 import { parseByteRange } from "./range.ts";
@@ -17,6 +18,7 @@ import { detectCandidateSilence } from "./silence.ts";
 import { createReviewExportPackage } from "./export-package.ts";
 import { assertPreflightEligible, preflightReviewSession } from "./preflight.ts";
 import { approveAndRenderProject, capabilities, renderPlanValue } from "./service.ts";
+import { createWorkspaceProject, createWorkspaceClip, duplicateWorkspaceProject, inspectProjectMedia, listWorkspaceProjects, readWorkspaceProject, rememberReviewProject } from "./workspace-projects.ts";
 import { editPlanSchema } from "./schema.ts";
 import { createReviewSystemCheck } from "./system-check.ts";
 
@@ -34,7 +36,7 @@ const allowedOrigins = new Set(
 );
 const approvalRequestSchema = z.object({
   plan: editPlanSchema,
-  renderLimitSeconds: z.number().min(0.1).max(300).default(300),
+  renderLimitSeconds: z.number().min(0.1).max(14_400).default(300),
 });
 const registerSessionSchema = z.object({ manifestPath: z.string().min(1) });
 const selectCandidateSchema = z.object({ candidateId: z.string().min(1) });
@@ -61,7 +63,7 @@ const reviewerNoteRequestSchema = z.object({
 const previewSessionCandidateSchema = z.object({
   candidateId: z.string().min(1),
   approvalToken: z.string().uuid(),
-  renderLimitSeconds: z.number().min(0.1).max(120).default(60),
+  renderLimitSeconds: z.number().min(0.1).max(14_400).default(60),
 });
 const generateCaptionsSchema = z.object({
   candidateId: z.string().min(1),
@@ -77,7 +79,7 @@ const reviseCaptionsSchema = z.object({
 const approveSessionCandidateSchema = z.object({
   candidateId: z.string().min(1),
   approvalToken: z.string().uuid(),
-  renderLimitSeconds: z.number().min(0.1).max(300).default(300),
+  renderLimitSeconds: z.number().min(0.1).max(14_400).default(300),
 });
 const approveSessionBatchSchema = z.object({
   candidateIds: z.array(z.string().min(1)).min(1).max(20).refine(
@@ -85,7 +87,7 @@ const approveSessionBatchSchema = z.object({
     "candidateIds must be unique",
   ),
   approvalToken: z.string().uuid(),
-  renderLimitSeconds: z.number().min(0.1).max(300).default(300),
+  renderLimitSeconds: z.number().min(0.1).max(14_400).default(300),
 });
 const preflightSessionSchema = z.object({
   candidateIds: z.array(z.string().min(1)).min(1).max(20).refine(
@@ -93,7 +95,7 @@ const preflightSessionSchema = z.object({
     "candidateIds must be unique",
   ).optional(),
   mode: z.enum(["preview", "final", "batch", "export"]).default("final"),
-  renderLimitSeconds: z.number().min(0.1).max(300).default(300),
+  renderLimitSeconds: z.number().min(0.1).max(14_400).default(300),
 });
 const exportPackageRequestSchema = z.object({
   candidateIds: z.array(z.string().min(1)).min(1).max(20).refine(
@@ -248,7 +250,37 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && requestUrl.pathname === "/v1/review-sessions") {
       const input = registerSessionSchema.parse(await readJsonBody(request));
       const registered = await registry.register(input.manifestPath);
+      await rememberReviewProject(input.manifestPath);
       sendJson(request, response, 201, registered);
+      return;
+    }
+
+    if (requestUrl.pathname === "/v1/workspace-projects") {
+      if (request.method === "GET") { sendJson(request, response, 200, { projects: await listWorkspaceProjects(), mediaRoot: await getWorkspaceRoot() }); return; }
+      if (request.method === "POST") { sendJson(request, response, 201, await createWorkspaceProject(await readJsonBody(request))); return; }
+    }
+    const projectRoute = match(requestUrl.pathname, /^\/v1\/workspace-projects\/([^/]+)\/(open|duplicate|media|clips)$/);
+    if (request.method === "POST" && projectRoute) {
+      const project = await readWorkspaceProject(projectRoute[0]!);
+      if (projectRoute[1] === "open") {
+        const registration = await registry.register(project.manifestPath);
+        if (project.kind === "full-project" && !approvalInProgress) {
+          const loaded = await registry.load(registration.sessionId);
+          const interrupted = loaded.candidates.some((candidate) => ["previewing", "rendering", "queued"].includes(candidate.status));
+          if (interrupted) await registry.update(registration.sessionId, (session) => ({ ...session, updatedAt: new Date().toISOString(), candidates: session.candidates.map((candidate) => ["previewing", "rendering", "queued"].includes(candidate.status) ? { ...candidate, status: "failed", error: "The previous render was interrupted. Review the saved edit and start a new preview or final render." } : candidate) }));
+        }
+        sendJson(request, response, 200, { project, ...registration });
+      } else if (projectRoute[1] === "duplicate") {
+        if (approvalInProgress) throw new StaleRevisionError("Wait for the current render before making a copy");
+        sendJson(request, response, 201, await registry.withProjectSnapshot(project.manifestPath, () => duplicateWorkspaceProject(project.id)));
+      } else if (projectRoute[1] === "media") {
+        const input = z.object({ path: z.string().min(1) }).parse(await readJsonBody(request));
+        sendJson(request, response, 200, await inspectProjectMedia(input.path));
+      } else {
+        if (approvalInProgress) throw new StaleRevisionError("Wait for the current render before creating a clip");
+        const input = await readJsonBody(request);
+        sendJson(request, response, 201, await registry.withProjectSnapshot(project.manifestPath, () => createWorkspaceClip(project.id, input)));
+      }
       return;
     }
 
@@ -263,6 +295,7 @@ const server = createServer(async (request, response) => {
       const input = preflightSessionSchema.parse(await readJsonBody(request));
       const root = await getWorkspaceRoot();
       const loaded = await registry.load(preflightRoute[0]!);
+      if (loaded.kind !== "full-project" && input.renderLimitSeconds > 300) throw new Error("Clip review render limit is 300 seconds");
       sendJson(request, response, 200, await preflightReviewSession(root, loaded, input));
       return;
     }
@@ -388,6 +421,16 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    const outputRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/candidates\/([^/]+)\/output$/);
+    if ((request.method === "GET" || request.method === "HEAD") && outputRoute) {
+      const session = await registry.load(outputRoute[0]!);
+      const candidate = session.candidates.find((entry) => entry.id === outputRoute[1]);
+      if (!candidate?.outputExists) throw new Error("No final video exists for this edit");
+      if (requestUrl.searchParams.has("download")) response.setHeader("Content-Disposition", `attachment; filename="${candidate.title.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 100)}.mp4"`);
+      await streamMedia(request, response, candidate.plan.output.path);
+      return;
+    }
+
     const systemCheckRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/system-check$/);
     if (request.method === "GET" && systemCheckRoute) {
       const root = await getWorkspaceRoot();
@@ -490,6 +533,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       const loaded = await registry.load(previewRoute[0]!);
+      if (loaded.kind !== "full-project" && input.renderLimitSeconds > 120) throw new Error("Clip preview limit is 120 seconds");
       if (loaded.selectedCandidateId !== input.candidateId) throw new Error("Candidate must be selected before preview rendering");
       const candidate = loaded.candidates.find((entry) => entry.id === input.candidateId);
       if (!candidate) throw new Error("Unknown candidate");
@@ -567,6 +611,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       const loaded = await registry.load(approveRoute[0]!);
+      if (loaded.kind !== "full-project" && input.renderLimitSeconds > 300) throw new Error("Clip final render limit is 300 seconds");
       if (loaded.selectedCandidateId !== input.candidateId) throw new Error("Candidate must be selected in the review session before approval");
       const candidate = loaded.candidates.find((entry) => entry.id === input.candidateId);
       if (!candidate) throw new Error("Unknown candidate");
@@ -828,6 +873,12 @@ const server = createServer(async (request, response) => {
     const statusCode = error instanceof StaleRevisionError ? 409 : error instanceof SyntaxError || error instanceof z.ZodError ? 400 : 500;
     sendJson(request, response, statusCode, { error: message });
   }
+});
+
+for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => {
+  stopMediaProcesses();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3_000).unref();
 });
 
 server.listen(port, host, () => {

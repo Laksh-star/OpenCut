@@ -1,4 +1,5 @@
-import { access, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { access, writeFile, rename, link, rm } from "node:fs/promises";
 import { posix } from "node:path";
 
 import { compileEditPlan, type RenderProfile } from "./ffmpeg.ts";
@@ -14,10 +15,11 @@ import { getPlanDuration, parseEditPlan, upgradeEditPlanToV2, type EditPlan } fr
 import { createReviewSystemCheck } from "./system-check.ts";
 
 const MAX_PREVIEW_SECONDS = 300;
+const MAX_RENDER_SECONDS = 14_400;
 
 export const capabilities = {
   server: "opencut-agent-bridge",
-  version: "0.10.0",
+  version: "0.11.0",
   adapter: "ffmpeg-production-graph",
   editorApiConnected: false,
   operations: [
@@ -40,6 +42,9 @@ export const capabilities = {
     schemaVersions: ["1", "2"],
     outputFormat: "mp4",
     maximumPreviewSeconds: MAX_PREVIEW_SECONDS,
+    maximumProjectRenderSeconds: MAX_RENDER_SECONDS,
+    persistentProjectLibrary: true,
+    mainProjectEditing: true,
     videoOverlays: true,
     audioMixing: true,
     smartAudioDucking: true,
@@ -270,18 +275,22 @@ export const compilePlanFile = async (
   const safeDurationLimit =
     durationLimitSeconds === undefined
       ? undefined
-      : Math.min(MAX_PREVIEW_SECONDS, Math.max(0.1, durationLimitSeconds));
+      : Math.min(MAX_RENDER_SECONDS, Math.max(0.1, durationLimitSeconds));
   const graphics = plan.version === "2" ? await preparePlanGraphics(root, plan, assets) : [];
   return compileEditPlan(plan, assets, outputPath, safeDurationLimit, profile, graphics);
 };
 
 const executeCompiledPlan = async (compiled: ReturnType<typeof compileEditPlan>, renderedSeconds: number) => {
-  const result = await runProcess(compiled.command, compiled.args, { maxOutputBytes: 4_000_000 });
-  if (result.exitCode !== 0) {
-    throw new Error(`ffmpeg failed with exit code ${result.exitCode}: ${result.stderr.trim()}`);
-  }
-  await access(compiled.outputPath);
-  return { outputPath: compiled.outputPath, renderedSeconds, ffmpegExitCode: result.exitCode };
+  const temporary = posix.join(posix.dirname(compiled.outputPath), `.${posix.basename(compiled.outputPath, ".mp4")}.render-${randomUUID()}.mp4`);
+  try {
+    const args = [...compiled.args.slice(0, -1), temporary];
+    const result = await runProcess(compiled.command, args, { maxOutputBytes: 4_000_000 });
+    if (result.exitCode !== 0) throw new Error(`ffmpeg failed with exit code ${result.exitCode}: ${result.stderr.trim()}`);
+    await access(temporary);
+    if (compiled.args.includes("-y")) await rename(temporary, compiled.outputPath);
+    else await link(temporary, compiled.outputPath); // EEXIST preserves an earlier final.
+    return { outputPath: compiled.outputPath, renderedSeconds, ffmpegExitCode: result.exitCode };
+  } finally { await rm(temporary, { force: true }); }
 };
 
 export const renderPlanValue = async (
@@ -294,7 +303,7 @@ export const renderPlanValue = async (
   const { plan, durationSeconds: timelineDuration } = validatePlan(value);
   const assets = await resolvePlanAssets(root, plan);
   const outputPath = await resolveOutputPath(root, requestedOutputPath);
-  const safeLimit = Math.min(MAX_PREVIEW_SECONDS, Math.max(0.1, durationSeconds));
+  const safeLimit = Math.min(MAX_RENDER_SECONDS, Math.max(0.1, durationSeconds));
   const renderPlan = { ...plan, output: { path: requestedOutputPath, overwrite: true } } as EditPlan;
   const graphics = renderPlan.version === "2" ? await preparePlanGraphics(root, renderPlan, assets) : [];
   const compiled = compileEditPlan(
@@ -320,7 +329,7 @@ export const renderPlanPreview = async (
   );
   return executeCompiledPlan(
     compiled,
-    Math.min(compiled.durationSeconds, durationSeconds, MAX_PREVIEW_SECONDS),
+    Math.min(compiled.durationSeconds, durationSeconds, MAX_RENDER_SECONDS),
   );
 };
 
@@ -338,9 +347,10 @@ export const approveAndRenderProject = async (
   await resolvePlanAssets(root, plan);
 
   const requestedLimitSeconds = Math.min(
-    MAX_PREVIEW_SECONDS,
+    MAX_RENDER_SECONDS,
     Math.max(0.1, options.renderLimitSeconds ?? MAX_PREVIEW_SECONDS)
   );
+  if (durationSeconds > requestedLimitSeconds + 0.001) throw new Error("The full video exceeds this render limit; increase the limit before approving");
   const requestedPaths = deriveProjectPaths(plan);
   const editPlanPath = await resolveOutputPath(root, requestedPaths.editPlanPath);
   const projectRecordPath = await resolveOutputPath(
