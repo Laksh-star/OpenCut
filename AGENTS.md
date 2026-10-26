@@ -11,3 +11,8 @@
 - Keep user media and generated review artifacts outside the source repository.
 - Use independent dependency directories per checkout. Keep the FFmpeg CLI backend
   until a separately tested native adapter can replace it.
+
+- Keep current documentation aligned with user-visible changes: `README.md`,
+  `FEATURES.md`, and the relevant main-editor, clip-review or bridge guide. Use
+  `DOCUMENTATION.md` as the map. Keep historical reports and verification results
+  explicitly dated; do not rewrite old test outcomes as fresh validation.

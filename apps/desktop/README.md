@@ -3,7 +3,10 @@
 Built with [GPUI](https://www.gpui.rs).
 
 > [!WARNING]
-> Very early. Right now this is just a window that opens.
+> This checkout contains an early Rust window/panel scaffold with placeholder
+> media, preview, timeline and inspector panels. The working local video editor
+> is the browser studio described in the [main README](../../README.md), launched
+> with `opencut-studio`. These desktop build commands do not start that workflow.
 
 ## Running
 

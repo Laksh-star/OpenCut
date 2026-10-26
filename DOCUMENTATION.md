@@ -1,0 +1,37 @@
+# Documentation map
+
+Current behavior is documented for the local fork's bridge **0.11.0** as of
+26 October 2026. Start with the guide for your task; dated evidence/history is
+separate from current operating instructions.
+
+| Document | Purpose |
+| --- | --- |
+| [README](README.md) | Current scope, dependency setup, launcher, default/local ports and workflow choices |
+| [Main editor guide](apps/agent-bridge/MAIN_EDITOR_GUIDE.md) | Full-video project creation, editing, media, child clips, export and reopening |
+| [Clip review guide](apps/agent-bridge/USER_GUIDE.md) | Three-stage review, proposals, captions, batches, output and recovery |
+| [Features and limits](FEATURES.md) | Main versus clip behavior, retiming semantics, request limits and remaining work |
+| [Bridge reference](apps/agent-bridge/README.md) | MCP/HTTP API, storage, setup, privacy, contracts and developer checks |
+| [Project report](project-report.md) | Current architecture overview plus explicitly dated July report |
+| [Shiplog](shiplog.md) | Maintained record of implementation, validation and delivery |
+| [Desktop README](apps/desktop/README.md) | Separate upstream Rust desktop scaffold; not the browser studio launcher |
+
+## Evidence and milestones
+
+- [0.11.0 local fork milestone](changelog/0.11.0.md): delivered main-editor and
+  review-workspace changes; this is not a public upstream release announcement.
+- [Main editor verification](verification/2026-10-26-main-editor.md): 66 bridge and
+  24 web tests, full-project render/download/restart checks and browser evidence.
+- [Review UI verification](verification/2026-10-26-review-ux.md): three-stage flow,
+  desktop/mobile behavior and separate preview/final approval.
+- [Transcript/integration verification](verification/2026-10-26.md): upstream
+  integration, revision/provenance tests and preservation of previous work.
+
+Earlier changelog entries and the July report are historical records. Their UI
+labels, test totals and limits are not current instructions. The documentation-only
+pass does not imply those application checks were rerun.
+
+## Keeping this accurate
+
+When behavior changes, update the relevant guide, feature/limit reference and API
+contract together. Record actual validation and limitations in the shiplog. Keep
+past verification results dated; add new evidence instead of rewriting history.

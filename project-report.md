@@ -1,10 +1,103 @@
-# OpenCut AI-Agent Extension Project Report
+# OpenCut fork project report
 
-**26 October 2026 update:** the historical report below describes the July baseline.
-The fork now also includes transcript edit proposals, local revision commands,
-pause suggestions, revision restoration, and upstream foundations through
-`e6680107`. See [shiplog.md](shiplog.md) for the maintained development record and
-[the verification report](verification/2026-10-26.md) for current evidence and limits.
+## Current state — 26 October 2026
+
+Bridge **0.11.0** delivers a local browser workspace for full-video editing and
+independent short-clip review. The current working branch is
+`codex/agent-bridge-mvp`. Implementation `03438ffe` added the main workspace;
+`a44b6b2c` simplified clip review; `5c8d8178` delivered reviewed transcript edits.
+These commits were pushed to the user fork. This is not an upstream release or a
+claim that its native Editor API is complete.
+
+### What is delivered now
+
+| Area | Current implementation |
+| --- | --- |
+| Projects home | Create/open complete-video projects; separate main/clip lists; stable project links and local library records |
+| Main editor | Full-source v2 timeline; cut selection/split; proposed trim/remove/move-first; transcript editing; saved revisions |
+| Media/production | Append video; add image/video overlay, ducked music, opening title, supplied SRT/VTT; remove production layers; detailed controls in Advanced |
+| Clip reviews | Choose clips → Edit → Review & export; concise cards/rationale; Source/Edited preview distinction; secondary batch controls |
+| Editing engine | Local keep/remove/shorten/reorder proposals, whole-cue timing, protection, pause suggestions and restore; separate save |
+| Captions | Local/provided or explicitly approved API transcription, readiness checks, manual correction, revisioned SRTs, long-caption rendering |
+| Main/clip relationship | Saved main ranges produce isolated children with retimed captions/layers; parent stays unchanged |
+| Preview/final | Exact saved-version gate, separate explicit approvals; full main timelines up to four hours; oversized finals blocked |
+| Output/recovery | Atomic successful MP4 publication, final stream/download/package, immutable finals, editable main copies, restart/retry handling |
+| Agent integration | Existing 14 MCP tools plus HTTP project/editorial routes; FFmpeg adapter remains separate from native upstream APIs |
+
+The main-project path now covers the complete recording, while clip review remains
+an optional related workflow. It does not automatically rank highlights or infer
+new edits just because a video is imported.
+
+### Architecture
+
+```mermaid
+flowchart TD
+    Home[Projects home] --> Main[Full-video editor]
+    Main --> Save[Saved plan and caption revisions]
+    Save --> Preview[Explicit full edited preview]
+    Preview --> Human[Human final approval]
+    Human --> Final[Atomic final MP4]
+    Final --> Delivery[Playback, download or local package]
+    Save --> Child[Independent child clip review]
+    Child --> ClipStages[Choose clips / Edit / Review and export]
+    ClipStages --> ClipGate[Separate clip preview and final approval]
+```
+
+The persistent library record points to a manifest and isolated candidate plan.
+Opening a stable project link creates a new opaque registration. Source/production
+files stay in their existing media root. The same schema, editorial engine,
+caption revisions, preflight and FFmpeg renderer support both workspaces. Clip
+sessions retain the stricter asset/project/output contract; full projects can
+add media and revise project settings while keeping asset identity, final output
+isolation and version checks.
+
+### Validation and current recording status
+
+The implementation pass recorded **66 bridge tests and 24 web tests**, both
+TypeScript checks/builds, and generated-media integration checks. A **301-second**
+project with **201 captions**, watermark and title passed full preview/final,
+range-download, child isolation, packaging and restart/recovery checks. Browser
+checks covered an edited 10-second multi-source production, an editable copy,
+and desktop/mobile layouts.
+
+A separate **19m49s** recording master was prepared with **357** reused local
+English cues and the supplied DB watermark, after rechecking its source hash.
+At the implementation verification checkpoint, no preview/final had been requested
+for that master. Existing clip selection, 15 audit events, revision-1 plans and two
+final outputs were preserved. Check the app for subsequent user-approved work.
+No external transcription provider or native desktop editor was exercised.
+
+These are recorded implementation results. This documentation pass does not
+claim to rerun those application checks. Exact evidence and remaining limits:
+
+- [Main editor verification](verification/2026-10-26-main-editor.md)
+- [Review UI verification](verification/2026-10-26-review-ux.md)
+- [Transcript/upstream integration verification](verification/2026-10-26.md)
+- [Maintained shiplog](shiplog.md)
+
+### Remaining work and operating instructions
+
+Native NLE timeline dragging, waveforms, keyframes, native file selection,
+detailed render percentages, automatic semantic caption repair, highlight ranking,
+reframing, dubbing, generative media and publishing are not implemented. Creating
+and removing production layers in the main editor is now delivered; the older
+roadmap's combined “track creation/deletion and keyframes” item is therefore only
+partially outstanding. Current operating scope is defined by the guides and
+feature reference below.
+
+Use the [documentation map](DOCUMENTATION.md), [current feature/limit reference](FEATURES.md),
+[main editor guide](apps/agent-bridge/MAIN_EDITOR_GUIDE.md) and
+[clip guide](apps/agent-bridge/USER_GUIDE.md) for current instructions.
+
+---
+
+## Historical report — 22 July 2026
+
+The material below preserves the earlier baseline, original verification results,
+and proposed next steps. References to “current,” “latest,” five-minute caps,
+six-step UI labels, old test totals and earlier provider limitations describe that
+historical snapshot, not the current 0.11.0 workspace. Some roadmap items have
+since shipped; use the current sections above to assess remaining work.
 
 **Status date:** 22 July 2026
 **Fork:** [Laksh-star/OpenCut](https://github.com/Laksh-star/OpenCut)

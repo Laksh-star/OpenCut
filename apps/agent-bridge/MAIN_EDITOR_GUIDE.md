@@ -1,87 +1,179 @@
-# Main video workspace
+# Main video editor guide
 
-Open the projects home at the local app's `/` URL. Main projects and clip reviews
-have separate lists. Existing `?session=...` review links keep the clip workflow.
+Bridge 0.11.0 · current behavior, 26 October 2026.
 
-## Start and reopen
+Use this workflow for a complete video. For agent-prepared short clips, use the
+[clip review guide](USER_GUIDE.md). [Features and limits](../../FEATURES.md) covers
+both workflows and the remaining work.
+
+## Open the workspace
+
+If the app is already running, open its projects home. The current local instance
+is **http://127.0.0.1:5273/**. A default launcher uses port **5173** instead.
+
+To start from the source checkout when no workspace is running:
 
 ```sh
 OPENCUT_AGENT_ROOT="/absolute/path/to/media-folder" \
   apps/agent-bridge/bin/opencut-studio
 ```
 
-Use `OPENCUT_AGENT_HTTP_PORT` and `OPENCUT_WEB_PORT` to choose ports. The launcher
-uses strict ports and stops both services if either fails. An already-running
-workspace should be used instead of launching another on the same ports.
+The media folder must already exist and contain the files you want to use. Sources
+stay in place. The launcher starts both local services, prints the app URL, and
+rejects occupied ports. `OPENCUT_WEB_PORT` and `OPENCUT_AGENT_HTTP_PORT` change the
+ports; [README setup](../../README.md#start-the-workspace) includes the configured
+5273/3320 example. Leave the launcher open while editing or rendering.
 
-Enter a project name and the local video path. The original video stays in place;
-no browser upload or large duplicate is needed. The path must be inside the media
-folder chosen for the launcher. Projects are stored beneath `opencut-projects/`;
-small library records live in `.opencut-agent/projects/`. Sources and outputs stay
-outside the source-code checkout.
+## Create a project
 
-Main projects have stable `/editor?project=<id>` links. Opening or refreshing one
-registers a fresh local session and reloads its saved plan, captions, and render
-state. If a prior render was interrupted, reopen the project and review the saved
-edit before retrying. Final files are published only after successful rendering;
-a failed job does not leave a partial MP4 masquerading as a final.
+1. In **Your projects**, enter **Project name** and **Video file path**.
+2. Paste the absolute path of a local video inside the configured media folder.
+3. Press **Create project**. The editor starts with the complete source on one
+   main timeline; video creation does not automatically transcribe or render.
+4. Return through **← Projects** and use **Main projects → Open project** to resume.
 
-## Edit the full video
+The project has a stable `/editor?project=<id>` link. A clip review has a different
+workflow and appears in **Clip reviews**. Library entries represent explicitly
+created/opened projects; the app does not scan your disk for unrelated videos.
 
-- **Source** plays the selected source cut. **Edited preview** plays the complete
-  rendered edit, with production layers and mixed sound.
-- The **Main timeline** selects cuts. Move the source playhead, then **Split at
-  playhead**. Save the resulting changes.
-- **Move cut first**, **Remove cut**, and **Trim to a timeline range** propose a
-  revision. Review retained ranges and caption/layer warnings, then explicitly
-  **Save timeline changes**. These operations retime captions, titles, overlays,
-  and audio using the existing editorial engine.
-- The transcript seeks, keeps/removes whole passages, proposes a shorter edit,
-  and provides cleanup/protection/restore under More editing tools.
-- **Media & production** adds timeline video, PNG/JPEG/WebP or video overlays,
-  music, SRT/VTT captions, and opening titles. Caption imports stay local; VTT is
-  normalized to a separate SRT. Music starts at a quiet level and ducks under
-  speech. Added video requires updated captions when a caption track exists.
-- Removing a production layer removes it from the edit while preserving the
-  media file. **Advanced** adjusts exact layout, speed, volume, caption style,
-  title/layer timing, provider setup, and notes/history.
+## Watch and edit
 
-Save changes before previewing or creating clips. Provider generation and caption
-corrections still create new saved revisions. External transcription still asks
-before sending extracted audio outside the machine. No transcription starts
-merely by adding a video.
+**Source** shows the selected original cut, including any captions or logos already
+baked into it. Click a transcript passage to seek, or use the source player's
+play/seek controls. Source playback is not a live view of your edits or mix.
+
+Use the visible **Main timeline**:
+
+- Select a cut to watch its source.
+- Move the playhead inside that cut and press **Split at playhead**. Press
+  **Save changes** to persist the split.
+- Select a cut and choose **Move cut first** or **Remove cut**. These produce a
+  proposal; review it and press **Save timeline changes**, or cancel it.
+- Expand **Trim to a timeline range**, enter the timeline seconds to retain, and
+  press **Review trim**. Review the proposal before saving.
+
+The transcript offers **Keep selected**, **Remove selected**, and a target length
+with **Shorten edit**. Proposals show duration, retained ranges, caption effects and
+production-layer warnings before a separate **Save changes** action. More editing
+tools contains local text commands, filler suggestions, passage protection,
+**Find audio pauses**, and **Restore previous revision**. Pause analysis is limited
+to ten source minutes/40 cuts; it is not a whole-recording analysis for a longer
+master. Nothing is removed automatically.
+
+The **Shorten edit** command currently accepts a target of at most **300 seconds**,
+even for a long master. Its prefilled value can exceed that limit; change it before
+using the command. To retain a longer edit, use **Trim to a timeline range** or
+select complete transcript passages to keep. This command limit does not cap the
+main project's full-length preview/final export.
+
+Editorial proposals retime captions, overlays, audio and titles with the retained
+speech. Existing crossfades are flattened with a warning. Cuts through part of a
+caption omit that cue and flag it for regeneration; no word timings are invented.
+Use these proposals for automatic retiming. Numeric in/out/speed fields in Advanced
+edit plan fields directly, so review and correct timing after changing them.
+
+Unsaved edits can be saved or discarded. Saving creates a version, preserving
+snapshots and invalidating the previous preview. Restore creates another version;
+it does not delete later history or overwrite an original media file.
+
+## Media and production
+
+Expand **Media & production**. Choose **Add**, enter **Local file path**, then
+press **Add media**. Save the resulting changes.
+
+| Add choice | Result |
+| --- | --- |
+| Timeline video | Appends a complete video cut; select its timeline cut to watch that source after saving |
+| Watermark / overlay | Adds a local PNG/JPEG/WebP or video overlay; images span the current edit, videos are bounded by their available duration |
+| Music | Adds quiet background audio with speech ducking; trims to available length rather than looping |
+| Captions (SRT/VTT) | Attaches supplied captions for the edited timeline; VTT is normalized to a separate local SRT |
+
+Enter **Opening title** and press **Add title** for a short title card. Layer buttons
+with × remove a production layer from the edit, retaining its file. Static full-edit
+watermarks extend when video is appended. Detailed position, sizing, timing,
+opacity, fit, title text, audio volume and ducking are in **Advanced**.
+
+Keep all referenced files available, including logos or captions stored in another
+project's folder. Sources are referenced rather than silently copied into a bundle.
+
+## Captions
+
+Supplied captions must use the **edited output timeline**, not absolute timestamps
+from a longer source after cuts/reordering. The transcript loads once the caption
+asset is saved. **Correct caption text & timing → Save caption changes** writes a
+new caption file and version. **Discard changes** abandons unsaved corrections.
+
+For transcription, open **Advanced** and select a subtitle provider. **Save changes**
+after changing provider settings, then press **Check setup**. **Generate captions**
+runs the chosen provider; provided-caption
+mode instead shows **Confirm caption asset**. Local Whisper needs a local command.
+OpenAI API/OpenRouter need credentials and explicit approval before extracted
+audio is uploaded. Adding a video does not start transcription.
+
+Adding footage to a captioned project marks its captions as needing an update.
+Attach a complete SRT or regenerate before rendering. Check ASR wording, names,
+timing and readability before final approval. Caption correction and provider
+runs create versions and require a fresh preview.
 
 ## Review and export
 
-1. Continue to **Review & export**.
-2. Press **Render edited preview**. For main projects this previews the whole
-   saved timeline; keep the local workspace running while it works.
-3. Watch the preview, then separately **Approve & render final**.
-4. **Watch final video** or **Download MP4**. Optionally create the local export
-   package with rendered files, captions and handoff metadata.
-5. Final edits remain immutable. **Make an editable copy** creates a new project
-   and output folder while retaining the previous final.
+1. Choose **Continue to review** or **Review & export**.
+2. Resolve any **Readiness check** blockers. Use **Retry checks** after a temporary
+   check failure. Save pending edits first.
+3. Press **Render edited preview**. For a main project this renders the complete
+   saved timeline, not just a one-minute excerpt. Keep the workspace running.
+4. Watch **Edited preview** in the player: check cut boundaries, captions, watermark,
+   titles, levels, framing and the ending.
+5. Press **Approve & render final** separately when satisfied.
+6. Use **Watch final video** or **Download MP4**. **Create export package** bundles
+   rendered videos, captions and available handoff metadata.
 
-Main-project previews/finals support timelines up to four hours. Oversized finals
-are blocked rather than silently exported as a five-minute excerpt. Large caption
-sets use a single transparent caption movie instead of hundreds of simultaneous
-image inputs. Caption QA accepts up to 10,000 cues, subject to the existing HTTP
-body/text-size limits; long-caption passages must not overlap.
+A preview does not approve a final. The final must correspond to the current saved
+version. Successful outputs publish atomically; failed jobs do not publish partial
+finals. Completed masters are read-only. **Make an editable copy** creates a new
+project/output folder for further work while retaining the approved original.
+
+Main timelines support up to four hours. Detailed progress percentages are not
+implemented, and long previews may take time. See [operating limits](../../FEATURES.md#operating-limits)
+for caption file/body limits and distinctions from clip and MCP requests.
 
 ## Create clips within a main project
 
-Open **Media & production → Create a short clip from this edit**. Enter a title
-and timeline start/end (up to 120 seconds). The saved main edit produces an
-independent clip review with retimed captions and layers. The main plan stays
-unchanged. Open the new clip review and use its separate preview/final approvals.
-Related existing clip reviews can also be linked in the local project library.
+1. Save the main edit.
+2. Open **Media & production → Create a short clip from this edit**.
+3. Enter **Clip title**, **Start (timeline seconds)** and **End** within the saved
+   timeline, up to 120 seconds long.
+4. Press **Create clip**, read any retiming warnings, and open the new clip link.
+5. Follow its **Choose clips → Edit → Review & export** workflow, with separate
+   preview/final approval.
 
-## Current boundaries
+The child gets its own plan, captions, outputs and review state. The saved master
+is unchanged. A main project can link existing clip reviews too; linked reviews
+remain separate projects. Clip creation does not automatically choose highlights.
 
-This is a functional browser editor backed by the local FFmpeg bridge. Timeline
-editing currently uses selection, split/range controls and explicit proposals;
-it does not provide a native draggable NLE timeline, waveforms, keyframes, or
-newly generated media. Import currently uses local paths rather than a native
-file picker. Source footage is not a live composite: use Edited preview to judge
-production appearance. Long previews can take time and do not yet show a detailed
-progress percentage. Music is trimmed to its available length, not looped.
+## Reopen and recovery
+
+Use the stable project link or **Main projects → Open project** after restarting.
+Opening registers a new opaque session and reloads saved plans, captions, revisions
+and completed outputs. An interrupted master is made available for retry; inspect
+its saved state before starting another preview/final. Unsaved browser changes
+are not a saved version and should not be expected to survive closing the page.
+
+| Symptom | Action |
+| --- | --- |
+| Port already in use | Use the existing app or stop its launcher before starting another; do not kill an active render |
+| Path outside media folder | Use an appropriate existing media root containing all inputs and outputs, then reopen with that launcher |
+| Missing video/logo/music | Restore the referenced file/path; moving just the project JSON does not copy sources |
+| Captions need updating | Attach a timeline-matching SRT or run the selected provider, then save/preview again |
+| Edited preview unavailable | Save pending changes and render a preview of the new version |
+| Final edit is read-only | Use Make an editable copy |
+| Export path is relative | Resolve it inside the launcher's media folder; the current configured root is Downloads |
+
+Project data lives under `opencut-projects/<id>/`; library records live under
+`.opencut-agent/projects/`. Back up both along with original/referenced media.
+Export packages contain rendered outputs and handoff metadata, not a source-media
+backup. For implementation details, use the [bridge reference](README.md).
+
+The current editor uses buttons/ranges/proposals. Native timeline dragging,
+waveforms, keyframes, file picking, automatic caption repair and generative media
+remain unimplemented; [FEATURES.md](../../FEATURES.md#remaining-work) is the current list.

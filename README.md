@@ -14,190 +14,148 @@
 [![X](https://img.shields.io/badge/follow-%40opencutapp-000?logo=x&logoColor=fff&style=flat)](https://x.com/opencutapp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
 
-## Status
+## Current fork status
 
-**OpenCut is being rewritten from the ground up.** What's coming:
+This fork provides a working **local video workspace** alongside the upstream
+OpenCut rewrite foundations. Bridge version **0.11.0**, documented 26 October 2026:
 
-- An Editor API
-- First-class third party plugins (made possible by a plugin-first architecture)
-- Desktop, mobile, and browser from one codebase (Rust core)
-- MCP server (for AI agents)
-- Headless mode (automation, batch rendering)
-- A scripting tab directly in the editor
+- **Projects home** creates and reopens full-video projects and saved clip reviews.
+- **Main editor** edits a complete video with a visible timeline, transcript,
+  media imports, watermarks, music, titles and captions.
+- **Clip review** uses **Choose clips → Edit → Review & export**. Main projects can
+  create independent clip reviews without changing the master edit.
+- **Local exports** require separate preview and final actions, preserve saved
+  revisions, and provide final playback, MP4 download and export packages.
 
-You can still find the previous version at [opencut-app/opencut-classic](https://github.com/opencut-app/opencut-classic), which is the one to reach for today. [opencut.app](https://opencut.app) still runs the classic version. The rewrite will live at [new.opencut.app](https://new.opencut.app) until it's ready to take over.
+The current renderer is an FFmpeg-backed adapter. The native upstream Editor API,
+Rust desktop editor and a native draggable timeline are separate work. See the
+[feature and limits reference](FEATURES.md) for the supported scope.
 
-## Development
+## Start the workspace
 
-Install [proto](https://moonrepo.dev/proto) if you haven't already:
+Run commands from this checkout, the directory containing `apps/`. In the local
+wrapper workspace, first enter `.opencut-runtime`. Keep source videos and generated
+projects outside the code checkout.
 
-**Linux, macOS, WSL:**
-
-```sh
-bash <(curl -fsSL https://moonrepo.dev/install/proto.sh)
-```
-
-**Windows (PowerShell):**
-
-```powershell
-irm https://moonrepo.dev/install/proto.ps1 | iex
-```
-
-If shims fail to run, allow local scripts for your user:
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-```
-
-From the repo root:
+Prerequisites: Bun **1.3.11**, FFmpeg and ffprobe on PATH. Tool pins are in
+[.prototools](.prototools); `proto use` can install the repository's pinned tools.
+Install dependencies independently in each checkout:
 
 ```sh
-proto use    # installs the tools pinned in .prototools
+(cd apps/agent-bridge && bun install --frozen-lockfile)
+(cd apps/web && ../agent-bridge/node_modules/.bin/bun install --frozen-lockfile)
 ```
 
-```sh
-moon run web:dev       # localhost:5173
-moon run api:dev       # localhost:8787
-moon run desktop:dev   # see apps/desktop/README.md
-```
-
-## AI agent bridge
-
-See [shiplog.md](shiplog.md) for the fork's development history and validation record.
-
-This fork includes an early, local-first MCP companion at
-[`apps/agent-bridge`](apps/agent-bridge). It gives AI agents a safe edit-plan
-workflow and FFmpeg preview renderer while OpenCut's native Editor API, MCP
-server, and headless mode are still under development. The bridge accepts both
-the original sequential plan and a backward-compatible v2 production contract
-with z-ordered video overlays, independently mixed audio, speech-keyed music
-ducking, crossfades, reusable title cards, and styled burned-in captions.
-
-See the [agent bridge documentation](apps/agent-bridge/README.md) for the tool
-contract, setup, safety boundaries, and agent configuration. See the
-[review workflow user guide](apps/agent-bridge/USER_GUIDE.md) for the
-human-facing review sequence and current limitations.
-
-Generate the local environment and Codex MCP configuration snippet with:
-
-```sh
-apps/agent-bridge/bin/opencut-setup --root "/absolute/path/to/video-workspace"
-```
-
-## Main video workspace
-
-The local app now opens a persistent project library. Create a full-length project
-from an existing local video, reopen it through a stable project link, arrange
-and split its timeline, edit with the transcript, add media/music/watermarks/titles/
-captions, and separately preview and approve the full export. Short clip reviews
-can be created inside the main project without changing the master edit.
+Start the projects home with an existing folder containing your media:
 
 ```sh
 OPENCUT_AGENT_ROOT="/absolute/path/to/media-folder" \
   apps/agent-bridge/bin/opencut-studio
 ```
 
-Main projects support up to four hours and retain saved revisions after a restart.
-Sources stay in place. Existing candidate-review links and launchers remain
-supported. See [the main editor guide](apps/agent-bridge/MAIN_EDITOR_GUIDE.md) for
-controls, export gates, and current editor limitations.
-
-## Agent candidate review workspace
-
-The web app now provides the first visual seam between agent-generated edit
-candidates and the future OpenCut Editor API. A review session compares
-isolated candidate plans, streams the local source directly from the loopback
-bridge, persists selection across refresh, and keeps selection separate from
-render approval.
-
-For a prepared `review-session.json`, run it from the repository root:
+The default app URL is **http://127.0.0.1:5173/**; its bridge uses port **3210**.
+The currently configured local workspace uses **http://127.0.0.1:5273/** and bridge
+port **3320**. To use that pair when no workspace is already running:
 
 ```sh
-OPENCUT_AGENT_ROOT="/absolute/path/to/video-workspace" \
+OPENCUT_AGENT_ROOT="$HOME/Downloads" \
+OPENCUT_AGENT_HTTP_PORT=3320 OPENCUT_WEB_PORT=5273 \
+  apps/agent-bridge/bin/opencut-studio
+```
+
+Use the open workspace if it is already running. The launcher rejects occupied
+ports, configures the browser origin, and stops both services together. Leave the
+launcher running during work; Ctrl+C stops it. Launchers prefer the checkout's
+pinned Bun; `OPENCUT_BUN` supplies an explicit override.
+
+## Choose a workflow
+
+| Task | Where to start | Guide |
+| --- | --- | --- |
+| Edit a complete video | Projects home → enter project name and video path → Create project | [Main editor guide](apps/agent-bridge/MAIN_EDITOR_GUIDE.md) |
+| Resume a saved main edit | Main projects → Open project | [Reopen and recovery](apps/agent-bridge/MAIN_EDITOR_GUIDE.md#reopen-and-recovery) |
+| Make a short clip from a master | Media & production → Create a short clip from this edit | [Child clips](apps/agent-bridge/MAIN_EDITOR_GUIDE.md#create-clips-within-a-main-project) |
+| Review agent-prepared clips | Clip reviews → Open clip review, or launch its manifest | [Clip review guide](apps/agent-bridge/USER_GUIDE.md) |
+| Configure an agent or integrate the API | Local MCP/HTTP bridge | [Bridge reference](apps/agent-bridge/README.md) |
+
+Prepared review manifests can still launch directly:
+
+```sh
+OPENCUT_AGENT_ROOT="/absolute/path/to/media-folder" \
   apps/agent-bridge/bin/opencut-review \
-  /absolute/path/to/video-workspace/review-session.json
+  /absolute/path/to/media-folder/review-session.json
 ```
 
-In the review workspace you can:
+Main-project links use `/editor?project=<id>` and reopen a fresh session after a
+restart. Clip `?session=<id>` links are process-local: reopen through the library
+or launcher after restarting the bridge. Saved plans, selection, revisions and
+completed outputs remain on disk.
 
-1. Compare candidate edits generated by an agent.
-2. Read each candidate's strategy and rationale so “three candidates” means
-   three different editorial options unless the agent explicitly marks a
-   narrative-segment candidate.
-3. Select a candidate without authorizing a render.
-4. Follow Choose clips → Edit → Review & export; preview and final approval remain separate.
-5. Stream even multi-gigabyte local source media with byte-range requests.
-6. Select timeline clips to seek to their exact source in/out points.
-7. Adjust in/out points, ordering, speed, volume, and caption inclusion.
-8. Save changes as immutable numbered revisions with reviewer notes and audit events.
-9. Render and stream a fast preview tied to the current revision.
-10. Approve that revision separately to persist hashes and render the higher-quality MP4.
-11. Add several preview-approved candidates to an explicit batch queue for sequential final rendering.
-12. Reload without losing selection, revisions, preview state, batch state, notes, audit history, or final state.
-13. Edit v2 overlays, audio tracks, transitions, title cards, styled captions, ducking, and all layered media assets before previewing the compiled result.
-14. Drag and resize existing overlay/title boxes directly on the preview monitor, nudge them with the keyboard, and reposition burned-in captions by dragging their preview box.
-15. Choose and run the subtitle provider for the candidate: local Whisper, OpenAI API, OpenRouter, or supplied SRT/VTT captions. External API modes require an explicit upload confirmation before extracted candidate audio leaves the machine.
-16. Check provider readiness before caption work, then correct caption text/timing in the Caption QA panel and save those edits as a new revision before preview/final approval.
+## Editing and exports
 
-This is intentionally a review boundary, not a claim that the rewrite already
-has a complete editor. The current revision adapter remains FFmpeg-backed and
-will move behind the native Editor API when that API lands.
+**Source** plays original footage for the selected cut. **Edited preview** plays
+the rendered composition with cuts, captions, titles, watermark and sound. Source
+footage and optional layout guides are editing aids; they do not show the final
+composite.
 
-Current product gaps are tracked explicitly: the WYSIWYG surface edits existing
-agent-authored visual layers rather than creating new tracks or arbitrary
-keyframed effects. Subtitle-provider execution, setup checks, and manual caption
-QA now exist in the local bridge, but automatic semantic cleanup, diarization,
-and provider reliability handling still depend on future workflow improvements
-and the chosen local Whisper install or configured API keys.
+Main projects support full-timeline preview/final actions up to **four hours**.
+Clip review uses a **60-second preview request** and **300-second final request**;
+a clip preview may cover only the start of a longer candidate. Oversized finals
+are blocked instead of silently truncated. The MCP render tools retain their
+separate bounded limits. See [limits](FEATURES.md#operating-limits).
 
-### Transcript editing and revision commands
+Save changes, render an edited preview, inspect it, then separately approve the
+final. Each save invalidates the previous preview. Finished masters stay
+immutable; **Make an editable copy** gives further work its own output folder.
+Exports offer **Watch final video**, **Download MP4**, and **Create export package**.
 
-Saved review sessions now have a **Transcript & revision commands** panel. Click a
-caption passage to seek to its source moment, select complete cues to keep or
-remove, and review a proposed edit before saving it as a new revision. Supported
-local commands are “shorten this to 45 seconds”, “keep this passage”, “remove this
-passage”, and “move this clip first”. No model or external upload is needed for
-these commands. Standalone filler cues and locally detected quiet audio intervals
-are suggestions for review; they are never removed automatically.
+Local Whisper stays on the machine. Supplied captions can be reused without new
+transcription. OpenAI API/OpenRouter transcription needs explicit audio-upload
+approval and provider credentials. Editing commands run locally. Publishing is
+outside this workflow.
 
-The proposal shows timing, retained ranges, caption effects, and production-layer
-changes. It can preserve selected passages for that proposal. Captions, overlays,
-audio and titles follow the retained/reordered footage. Transitions become hard
-cuts at their midpoints, with an explicit warning. Cue timing is not word timing:
-cues bisected by a cut are omitted and flagged for regeneration. Restore previous
-revision creates another immutable revision, including its earlier caption asset.
-Every saved change invalidates the previous preview.
+## Agent bridge and development
 
-### Reproducible local setup
-
-Install dependencies separately in each checkout; do not symlink `node_modules`
-between worktrees. The web dependency versions and Bun lockfile pin the tested
-environment. The bridge includes the repository-pinned Bun 1.3.11 executable:
+The [bridge reference](apps/agent-bridge/README.md) documents the 14 MCP tools,
+HTTP routes, schema, storage, privacy and validation commands. Generate a local
+MCP configuration snippet when needed:
 
 ```sh
-cd apps/agent-bridge
-bun install --frozen-lockfile
-cd ../web
-../agent-bridge/node_modules/.bin/bun install --frozen-lockfile
+apps/agent-bridge/bin/opencut-setup --root "/absolute/path/to/media-folder"
 ```
 
-The launchers prefer that checkout's pinned executable. Set `OPENCUT_BUN` only
-when an explicit runtime override is needed. `OPENCUT_AGENT_ROOT` identifies the
-media workspace, not the source-code checkout. FFmpeg and ffprobe CLI tools with
-the required production filters must remain on PATH; upstream's shared media
-libraries do not replace them.
+This writes setup files inside the media root; it does not edit global agent
+configuration. `OPENCUT_AGENT_ROOT` is the media folder, not the source checkout.
+Do not symlink dependency directories across worktrees.
 
-`apps/agent-bridge/bin/opencut-plan` validates, saves and compiles supplied plans;
-preview/final rendering stays in the visible review workflow. A wrapper outside
-this checkout can select it with `OPENCUT_REPO_ROOT`, independent of the media root.
+Recorded implementation validation: **66 bridge tests + 24 web tests**, both
+TypeScript checks and production builds, the 301-second/201-caption full-project
+smoke, and existing editorial/review smokes. These are recorded results, not a
+claim that every platform or external transcription provider was exercised.
 
-## Contributing
+- [Main editor verification](verification/2026-10-26-main-editor.md)
+- [Review UI verification](verification/2026-10-26-review-ux.md)
+- [Transcript/upstream integration verification](verification/2026-10-26.md)
+- [Development shiplog](shiplog.md)
+- [Current architecture and historical report](project-report.md)
+- [Documentation index](DOCUMENTATION.md)
 
-We're not set up to take outside contributions yet while the architecture is being designed. If you want to follow along, ask questions, or just hang out, [join the Discord](https://discord.gg/zmR9N35cjK) or [open an issue](https://github.com/opencut-app/opencut/issues).
+Upstream web/API/desktop development tasks remain separate from the local studio
+launcher. The Rust desktop app is still a scaffold; see its
+[own README](apps/desktop/README.md). Earlier upstream editor code is available in
+[OpenCut Classic](https://github.com/opencut-app/opencut-classic).
 
-## Sponsors
+## Contributing to this fork
 
-OpenCut is supported by companies that believe in open source creator tools.
+The working development branch is `codex/agent-bridge-mvp`. Preserve the local
+bridge, immutable revisions, source-file boundaries and separate preview/final
+approval when integrating upstream changes. Update the relevant guides and
+[shiplog](shiplog.md) with each user-visible development pass.
+
+## Upstream sponsorship attribution
+
+The upstream README credits the following sponsorship; this is retained project
+attribution, not a list of services implemented in this fork.
 
 - [**fal.ai**](https://fal.ai?utm_source=github-opencut&utm_campaign=oss): Generative image, video, and audio models all in one place.
 

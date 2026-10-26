@@ -1,136 +1,150 @@
-# OpenCut Agent Review User Guide
+# Clip review user guide
 
-This guide is for the person reviewing clips that an AI agent prepared. The
-current workflow is local-first: source media stays on the machine, and no
-render, export, or publication happens unless you explicitly approve it.
+Bridge 0.11.0 · current behavior, 26 October 2026.
 
-For the complete-video workflow, see [Main video workspace](MAIN_EDITOR_GUIDE.md).
-The app home lists main projects and saved clip reviews.
+Use this workflow to compare and finish short clips prepared by an agent or
+created from a saved main edit. For a complete video, start with the
+[main editor guide](MAIN_EDITOR_GUIDE.md). The app home lists **Main projects**
+and **Clip reviews** separately.
 
-## What the agent does
+## Open a review
 
-The agent prepares a `review-session.json` with one or more isolated candidate
-edits. By default, three candidates should be meaningfully different editorial
-options:
+From **Your projects**, choose **Clip reviews → Open clip review**. For an
+agent-prepared `review-session.json`, the producer can launch it directly:
 
-1. `hook-first` — strongest opening and fastest payoff.
-2. `concise-core` — shortest self-contained explanation.
-3. `context-rich` — more setup so the speaker's meaning is preserved.
+```sh
+OPENCUT_AGENT_ROOT="/absolute/path/to/media-folder" \
+  apps/agent-bridge/bin/opencut-review \
+  /absolute/path/to/media-folder/review-session.json
+```
 
-If a candidate is instead one longer idea split into hook/body/close segments,
-it should be marked as `narrative-segment` so the reviewer does not mistake it
-for three separate clips.
+The launcher starts both local services and prints an opaque `?session=<id>` URL.
+Defaults are app port 5173 and bridge port 3210. The configured local instance
+uses **http://127.0.0.1:5273/** with bridge port 3320; see
+[launcher setup](../../README.md#start-the-workspace) for overrides.
 
-## What OpenCut review does
+Large sources stream directly from their local paths; you should not need to
+select or upload the video again. A session URL expires when its bridge restarts.
+Reopen through the library or run the launcher again to get a new session. Saved
+selection, versions, notes and completed outputs remain on disk.
 
-The review UI has three stages:
+## 1. Choose clips
 
-1. **Choose clips** — read each clip's topic and duration, expand **Why this
-   clip?**, then press **Open clip**. Opening a clip does not render it.
-2. **Edit** — watch **Source** beside the transcript. Click a passage to seek;
-   tick whole passages and choose **Keep selected** or **Remove selected**.
-   You can also enter a target duration and press **Shorten clip**. Review the
-   proposed changes, then press **Save changes**. Open **Correct caption text
-   & timing** for subtitle corrections. Saved changes create a new version and
-   invalidate the old preview. Unsaved changes prevent switching clips.
-3. **Review & export** — press **Render edited preview**, then watch **Edited
-   preview** in the same player. This shows the rendered cuts, titles,
-   watermark, captions, and audio. Press **Approve & render final** only when
-   satisfied. Once a final video exists, **Create export package** bundles the
-   rendered videos, captions, and handoff notes in a local folder.
+Read the title, summary, duration, aspect ratio and current state. Expand
+**Why this clip?** to read the editorial rationale. Press **Open clip**, or
+**Review final clip** for an already-rendered candidate. Selection does not render.
 
-The Source view shows original footage, including any captions already burned
-into the original. Use Edited preview to judge the actual produced clip.
+Three options should represent distinct moments by default. A longer narrative
+split across options should be described as such. A useful review checks whether
+each option stands alone, preserves the speaker's meaning, and differs from the
+other choices. Ask the producer for a new option if the candidates are too similar.
 
-**Advanced** contains layers, exact timing, audio, providers, project files,
-revision history, and plan download. **More editing tools** in the transcript
-contains local text commands, filler suggestions, pause analysis, passage
-protection, and restore. **Render several clips together** on the review screen
-contains batch selection and a separate batch approval button.
+## 2. Edit
 
-Existing rendered clips open at Review & export and remain read-only. Layouts
-stack on narrow screens; the same controls remain available. Export folder paths
-may be relative to the media root chosen by the launcher; resolve those inside
-that local folder (for the current podcast project, this is Downloads).
+**Source** shows the original selected source cut, including any baked-in text.
+Click a transcript passage to seek. Tick whole passages and choose **Keep selected**
+or **Remove selected**. You can enter a target length (up to 300 seconds and shorter
+than the current edit) and choose **Shorten clip**.
 
-The standalone **Import edit plan** flow remains available without a saved review
-session. It retains its original direct render approval; the staged preview/final
-gates above apply to saved review projects.
+Read the proposed changes and warnings before **Save changes**. **Cancel changes**
+discards the proposal. Proposing does not save or render. Saving creates a version
+and invalidates the previous preview. Unsaved plan/caption changes prevent switching
+clips and approving final/batch renders.
 
-## How to judge candidates
+**More editing tools** contains the local revision-command field, filler suggestions,
+**Find audio pauses**, passage protection and **Restore previous revision**.
+Supported commands are “shorten this to 45 seconds”, “keep this passage”, “remove
+this passage” and “move this clip first”. They run locally without a remote model.
+Suggestions do not automatically remove speech or pauses. Protection belongs to
+the current proposal and must be selected again after saving.
 
-For each candidate, check:
+Whole-cue timing is used. Cuts through part of a cue omit it and warn about
+regeneration. Editorial keep/remove/reorder retimes the retained captions and
+production layers; crossfades become midpoint hard cuts with a warning. Numeric
+in/out/speed controls in Advanced directly edit plan fields and require timing
+review; they do not provide the proposal engine's automatic retiming.
 
-- whether the clip is a distinct moment or part of a longer narrative;
-- the **rationale**: why the agent chose this candidate;
-- per-clip rationale in the inspector: why a specific source range starts and
-  ends where it does;
-- the source range and output duration;
-- caption readability and timing;
-- whether title cards, transitions, overlays, and audio ducking help or distract.
+## Caption checks
 
-If the rationale is missing or the candidates are too similar, ask the producer
-agent to create a fresh session with three distinct source moments.
+Open **Correct caption text & timing**, correct the wording/timing and press
+**Save caption changes**. This creates a separate local SRT and version. Use
+**Discard changes** to abandon unsaved corrections. Review names, sentence starts/
+ends and readability; automatic ASR wording repair is not implemented.
 
-## Current visual controls
+Provider settings are in **Advanced**. Choose local Whisper, supplied captions,
+OpenAI API or OpenRouter. **Save changes** after changing provider settings, then
+press **Check setup**. This readiness check does not
+transcribe or upload. Use **Generate captions**, or **Confirm caption asset** in
+provided-caption mode, when needed. A successful run creates a new version.
 
-Version-2 plans can edit existing overlay, audio, transition, title-card,
-caption-style, and ducking fields through inspector controls.
+Local Whisper stays on the machine and needs an available command. External
+providers require credentials and explicit approval before extracted audio is
+uploaded. Merely opening a clip or choosing a provider does not upload anything.
 
-In **Advanced**, enable **Show layout guides on source video** to edit the
-existing visual layers:
+## Production settings
 
-- drag existing overlay/title boxes to change position;
-- drag the bottom-right handle to resize overlay/title boxes;
-- use arrow keys for one-pixel nudges, or Shift+arrow for ten-pixel nudges;
-- drag the burned-in caption preview vertically to choose top, middle, or bottom
-  safe placement;
-- use the inspector for exact numbers, colors, opacity, font scale, timing, and
-  fit.
+Clip review adjusts an existing plan's layers. **Advanced** contains source range,
+speed, volume, caption inclusion, production presets, overlay/title layout, audio,
+ducking, existing transitions, provider settings, notes/history and plan download.
+New media/layer creation belongs to the main editor or producer-authored plans.
 
-These guides edit existing agent-authored layers. They do not yet create
-new overlay/title tracks, add masks, animate keyframes, or replace the required
-rendered preview as the final approval artifact.
+Enable **Show layout guides on source video** in Advanced to select, drag, resize
+and keyboard-nudge existing overlay/title boxes. Caption guides adjust safe-zone
+placement. These guides are editing aids, not a live rendered composition. Use
+**Edited preview** for actual appearance and sound.
 
-## Current subtitle workflow
+## 3. Review and export
 
-**Advanced** includes a subtitle-provider selector for each v2
-candidate. It records the approved caption source as part of the edit plan and
-can run the selected provider:
+1. Choose **Continue to review** or **Review & export**.
+2. Resolve **Readiness check** blockers; use **Retry checks** after a temporary
+   check failure. Save changes first.
+3. Press **Render edited preview** and watch **Edited preview** in the player.
+4. Check cuts, caption timing, logo/titles, audio, framing and ending. Then press
+   **Approve & render final** as a separate action.
+5. Use **Watch final video**, **Download MP4**, or **Create export package** when
+   the final is ready.
 
-- local Whisper;
-- OpenAI API transcription models;
-- OpenRouter transcription routes;
-- supplied local SRT/VTT files.
+The clip UI requests a 60-second preview. If a candidate is longer, that preview
+covers only its first minute. Final requests use a 300-second limit; an oversized
+final is blocked rather than silently truncated. Full-length video belongs in the
+[main editor](MAIN_EDITOR_GUIDE.md), which previews the whole saved timeline.
 
-The selector includes local/external privacy and cost notes. Press **Generate
-captions** after selecting the provider. Use **Check setup** first if you are
-not sure the bridge can see FFmpeg, ffprobe, the local Whisper command, the
-OpenAI/OpenRouter API key, or the supplied caption file. This check is
-read-only: it does not transcribe, render, upload, or change files.
+A final requires a preview of the exact saved version. Rendered candidates stay
+read-only. For a materially different rendered clip, request a new candidate or
+create a fresh child from its master. A main project has **Make an editable copy**;
+that action is not part of this clip-review screen.
 
-Local Whisper stays on this machine and requires a local Whisper command
-available to the bridge process. OpenAI API and OpenRouter modes ask for upload
-confirmation before sending the extracted candidate WAV audio, and require the
-matching API key in the bridge process environment. A successful provider pass
-saves an SRT asset into the candidate directory, attaches it to the edit plan,
-creates a new numbered revision, and invalidates any older preview.
+## Render several clips together
 
-After captions are loaded, open **Correct caption text & timing** to fix obvious
-spelling, wording, and timing errors. Editing a cue does not change the render until you press
-**Save caption changes**. That save writes a new local SRT file inside the
-candidate directory, creates a new numbered revision, and locks preview/final
-approval until a fresh preview is rendered. If you change your mind, press
-**Discard changes** before previewing.
+On the review screen, expand **Render several clips together**. Select only clips
+whose current previews you have checked, then use **Approve & render N clips**.
+Adding to the selection is not approval. Rendering is sequential and records each
+item's state. If a batch partially fails, use **Select failed clips to retry** and
+approve the retry separately. Finished outputs are preserved.
 
-## Hard boundaries
+## Output, storage and recovery
 
-- Candidate selection is not render approval.
-- Batch selection is not render approval.
-- Final render requires a successful preview of the current revision.
-- Rendered candidates are immutable; material edits require a new revision or
-  candidate.
-- Export packages include rendered outputs and metadata, not the original large
-  source video.
-- Publishing is a separate workflow and requires separate destination-specific
-  approval.
+**Create export package** bundles rendered MP4s, available captions, approved plans,
+project records, contact sheets and handoff notes. It does not copy the original
+large source video and does not publish anything. A relative package path is
+inside the launcher's media folder; the current local root is Downloads.
+
+Keep source and referenced production assets available. Reopen a review after a
+restart through the projects library or launcher. Version snapshots and audit
+history live beside each candidate; closing the browser does not save unsaved edits.
+
+Older encoded-plan links remain a legacy direct-render workflow without saved
+session preview gates. They are not the projects home's new-project flow; see the
+[bridge reference](README.md#legacy-encoded-plan-links).
+
+## End-to-end check
+
+For a disposable test project, verify: open a clip → seek through its transcript →
+propose a change → inspect it before saving → save → render preview → watch it →
+separately approve final → download or package. A new caption or plan save must
+make the previous preview unavailable for final approval. Do not use an immutable
+approved clip as the scratch edit.
+
+[Features and operating limits](../../FEATURES.md) lists pause-analysis, caption,
+batch and other bounds. Native timeline gestures, keyframes, automatic highlight
+ranking/reframing/dubbing and publishing are not implemented here.

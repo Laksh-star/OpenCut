@@ -161,3 +161,24 @@ historical runtime validation is only reported where separately recorded.
 - This is the local FFmpeg-backed main editor. Native timeline gestures, waveforms,
   keyframes, native file picking and detailed long-render progress remain future
   work. See [verification/2026-10-26-main-editor.md](verification/2026-10-26-main-editor.md).
+
+## 2026-10-26 — Documentation alignment for the main workspace
+
+- Reorganized the root README around the delivered project library, main editor,
+  clip review, setup/ports, saved-version approvals and current output actions.
+- Updated both user guides and the bridge/API reference to the actual 0.11.0 UI,
+  data layout, restart behavior, provider consent, import/caption semantics and
+  interface-specific render limits. Removed stale current claims about six UI
+  steps, a blanket five-minute cap, and the old 200-cue caption ceiling.
+- Added a documentation map, current feature/limit matrix and dated local fork
+  milestone. Updated the project report with current architecture/evidence and
+  explicitly separated its July baseline; historical results were preserved.
+- Documented the existing 300 s Shorten target limit and long-master prefill issue,
+  with range trimming as the longer-edit path; no runtime fix is claimed here.
+- Clarified the separate Rust desktop scaffold and added repository guidance for
+  keeping the relevant documents current with future user-visible work.
+- Validation for this pass: checked local documentation links/anchors, documented
+  command paths, current UI labels and implementation limits against owning source;
+  `git diff --check`. No application/media changes or renders; the 90-test and build
+  results linked in the documents are the earlier recorded implementation checks,
+  not newly rerun tests in this documentation-only pass.

@@ -1,10 +1,81 @@
-# OpenCut Agent Bridge
+# OpenCut local bridge reference
 
-This package is the first working seam between AI agents and the OpenCut rewrite. It exposes a local MCP server that can inspect media, validate and save declarative edit plans, upgrade v1 plans to the v2 production contract, compile deterministic FFmpeg filter graphs, run review-session preflight checks, check caption-provider readiness, generate or confirm review-candidate captions through approved subtitle providers, save reviewer-corrected caption text/timing as new revisions, render bounded MP4 previews with layered video, speech-keyed music ducking, transitions, title cards, styled captions, schema-backed subtitle-provider metadata, and create local handoff packages for rendered candidates.
+Fork bridge **0.11.0** (private package) · current behavior, 26 October 2026.
 
-It does **not** automate the browser, publish media, or claim to be OpenCut's future Editor API. The adapter is deliberately isolated so the FFmpeg preview backend can later be replaced by OpenCut's native API and headless renderer.
+The bridge backs the browser main editor and clip-review workflow with local
+files, declarative v1/v2 edit plans, immutable revisions, FFmpeg rendering and
+explicit human approval. It also exposes 14 MCP tools. The main-project library
+and editorial proposal routes are HTTP capabilities, not extra MCP tools.
 
-## Tools
+Start with the [main editor guide](MAIN_EDITOR_GUIDE.md),
+[clip review guide](USER_GUIDE.md), or [feature/limit reference](../../FEATURES.md).
+This adapter is separate from the future upstream native Editor API/Rust editor.
+
+## Setup and launch
+
+Run from the source checkout. Use independent dependencies per checkout/worktree.
+Bun 1.3.11 is pinned in [the tool manifest](../../.prototools); FFmpeg and ffprobe
+must be on PATH. See the [root setup](../../README.md#start-the-workspace) for installs.
+
+| Command | Purpose |
+| --- | --- |
+| `opencut-studio` | Start the HTTP bridge and browser projects home |
+| `opencut-review <manifest>` | Start both services and register a prepared clip review |
+| `opencut-agent-http` | Run only the loopback HTTP bridge |
+| `opencut-agent` | Run the stdio MCP server |
+| `opencut-setup --root <folder>` | Generate local environment/configuration snippets |
+| `opencut-plan` | Validate/save/compile a supplied plan; not a render approval |
+
+These executables are under `apps/agent-bridge/bin/`. Example:
+
+```sh
+OPENCUT_AGENT_ROOT="/absolute/path/to/media-folder" \
+  apps/agent-bridge/bin/opencut-studio
+```
+
+The launcher defaults to app **5173** and bridge **3210**, sets the matching browser
+origin, rejects occupied ports, and stops both services together. The configured
+local workspace uses app **5273** and bridge **3320**:
+
+```sh
+OPENCUT_AGENT_ROOT="$HOME/Downloads" \
+OPENCUT_WEB_PORT=5273 OPENCUT_AGENT_HTTP_PORT=3320 \
+  apps/agent-bridge/bin/opencut-studio
+```
+
+Do not start another launcher on an occupied pair. Keep an existing workspace open
+or stop its idle launcher normally before changing configuration.
+
+When running HTTP and Vite separately, configure `VITE_OPENCUT_BRIDGE_URL` on the
+web process and `OPENCUT_WEB_ORIGINS` on the bridge. The bridge binds only to
+127.0.0.1, with default allowed origins `http://localhost:5173` and
+`http://127.0.0.1:5173`. `OPENCUT_WEB_ORIGINS` is a comma-separated allowlist.
+
+## Environment and providers
+
+| Variable | Meaning |
+| --- | --- |
+| `OPENCUT_AGENT_ROOT` | Existing media/output root; every resolved input/output must remain inside it |
+| `OPENCUT_AGENT_HTTP_PORT` | Bridge port; default 3210 |
+| `OPENCUT_WEB_PORT` | Combined launcher app port; default 5173 |
+| `OPENCUT_WEB_ORIGINS` | Allowed browser origins; the combined launcher supplies its app origin |
+| `VITE_OPENCUT_BRIDGE_URL` | Bridge URL for a separately started web process |
+| `OPENCUT_BUN` | Explicit launcher runtime override; otherwise prefer checkout-pinned Bun |
+| `OPENCUT_LOCAL_WHISPER_COMMAND` / `WHISPER_COMMAND` | Local Whisper executable override; default `whisper` on PATH |
+| `OPENAI_API_KEY` / `OPENROUTER_API_KEY` | Optional external transcription credentials |
+
+Local Whisper remains on-device. Provided-caption confirmation reuses local
+captions. OpenAI API/OpenRouter generation sends extracted candidate WAV audio
+only with explicit upload approval (`externalUploadApproved=true`) and credentials.
+No provider runs just because a video is imported or a provider is selected.
+
+The setup command writes `.opencut-agent/opencut.env`, `codex-mcp.toml` and
+`setup.json` in the media root. It does not edit global agent configuration.
+Set/load environment values into the process that starts the bridge; generating
+an environment snippet is not the same as configuring a running provider. Keep
+credentials out of source control and documentation.
+
+## MCP tools
 
 - `opencut_capabilities`
 - `opencut_inspect_media`
@@ -21,335 +92,242 @@ It does **not** automate the browser, publish media, or claim to be OpenCut's fu
 - `opencut_approve_and_render_project`
 - `opencut_create_export_package`
 
-Every file operation is restricted to `OPENCUT_AGENT_ROOT`. Inputs must exist,
-missing output directories are created only after their nearest existing parent
-has been verified inside that root, FFmpeg is invoked without a shell, preview
-duration is capped at five minutes, and no tool publishes anything. Local
-Whisper caption generation stays on-device. OpenAI/OpenRouter caption
-generation uploads only the extracted review-candidate WAV audio and requires
-`externalUploadApproved=true` plus the matching API key in the bridge process
-environment.
-
-## Run locally
-
-From the repository root:
-
-```sh
-proto use
-moon run agent-bridge:test
-moon run agent-bridge:typecheck
-moon run agent-bridge:smoke
-```
-
-With FFmpeg installed, run a complete generated-media render smoke test:
-
-```sh
-cd apps/agent-bridge
-bun run smoke:render
-bun run smoke:review
-bun run smoke:production
-```
-
-Generate a ready-to-merge Codex MCP configuration and environment file with one command:
-
-```sh
-apps/agent-bridge/bin/opencut-setup \
-  --root "/absolute/path/to/video-workspace"
-```
-
-The command creates `.opencut-agent/opencut.env`, `codex-mcp.toml`, and a
-machine-readable `setup.json` inside the workspace. It never edits the user's
-global Codex configuration or writes outside `OPENCUT_AGENT_ROOT`.
-
-Start the stdio MCP server directly:
-
-```sh
-OPENCUT_AGENT_ROOT="$PWD" apps/agent-bridge/bin/opencut-agent
-```
-
-Start the loopback-only HTTP bridge used by the web review workspace:
-
-```sh
-OPENCUT_AGENT_ROOT="$PWD" apps/agent-bridge/bin/opencut-agent-http
-```
-
-The HTTP bridge binds to `127.0.0.1:3210`, accepts browser requests only from
-the local OpenCut development origins by default, caps request bodies at 2 MB,
-and permits one approval render at a time. Override the port with
-`OPENCUT_AGENT_HTTP_PORT` or the comma-separated browser origin allowlist with
-`OPENCUT_WEB_ORIGINS`.
-
-FFmpeg and ffprobe must be available on `PATH` for media inspection and preview rendering.
-For provider-backed caption generation, local Whisper mode expects `whisper` on
-`PATH` unless `OPENCUT_LOCAL_WHISPER_COMMAND` or `WHISPER_COMMAND` points to a
-different executable. OpenAI API mode requires `OPENAI_API_KEY`. OpenRouter
-mode requires `OPENROUTER_API_KEY`.
-
-## Connect an agent
-
-Generic MCP client configuration:
+Connect using a local MCP configuration such as:
 
 ```json
 {
   "mcpServers": {
     "opencut": {
       "command": "/absolute/path/to/OpenCut/apps/agent-bridge/bin/opencut-agent",
-      "env": {
-        "OPENCUT_AGENT_ROOT": "/absolute/path/to/video-workspace"
-      }
+      "env": { "OPENCUT_AGENT_ROOT": "/absolute/path/to/media-folder" }
     }
   }
 }
 ```
 
-Codex `config.toml` equivalent:
-
-```toml
-[mcp_servers.opencut]
-command = "/absolute/path/to/OpenCut/apps/agent-bridge/bin/opencut-agent"
-
-[mcp_servers.opencut.env]
-OPENCUT_AGENT_ROOT = "/absolute/path/to/video-workspace"
-```
-
-## Agent workflow
-
-1. Call `opencut_capabilities`.
-2. Inspect every source with `opencut_inspect_media`.
-3. Create a sequential v1 plan matching [`examples/demo.edit-plan.json`](examples/demo.edit-plan.json), or a layered v2 plan matching [`examples/multitrack.edit-plan.json`](examples/multitrack.edit-plan.json).
-4. Validate and save it.
-5. Compile it and review the returned FFmpeg argv.
-6. Render a short preview.
-7. Run `opencut_check_review_system` or the review UI's **Check setup** action before caption work to verify FFmpeg, ffprobe, and the selected provider's local command/API key/caption file.
-8. If captions are missing or need replacement, run `opencut_generate_review_captions` or the review UI's **Generate captions** action. External API modes require explicit upload approval.
-9. If subtitles need correction, run `opencut_revise_review_captions` or use the review UI's **Caption QA** panel to save corrected text/timing as a new revision.
-10. Run review-session preflight before preview, final, batch, or export actions.
-11. Ask for human approval before a longer render or any publishing workflow.
-12. Package rendered candidates for local delivery without copying the original source video.
-
-Version 1 remains supported unchanged. Version 2 keeps the sequential clips as
-the primary A-roll and adds z-ordered video overlay tracks, independent audio
-tracks, adjacent-clip transitions, timed title cards, and styled caption
-settings. Music-role tracks can be lowered automatically from the primary
-speech signal with FFmpeg `sidechaincompress`. Transitions use `xfade` plus
-`acrossfade`; title cards and SRT cue text are rasterized locally into
-transparent PNGs and composed with `overlay`, so burned-in text does not depend
-on optional FFmpeg font or libass filters. Caption mode can be `selectable`,
-`burn-in`, or `both`. Generated graphics stay under
-`.opencut-agent/render-assets/` inside the configured root.
-Burn-in rendering is capped at 200 SRT cues per bounded render.
-
-The full v2 example also documents reusable `intro`, `outro`, and
-`lower-third` templates, five transition styles, caption presets (`clean`,
-`bold`, and `minimal`), audio-track roles, and ducking controls. Keyframes and
-native OpenCut project synchronization remain later adapter features.
-
-The web app's agent review workspace consumes this same schema for visual
-inspection and approval. A reviewer can revise clip ranges, ordering, speed,
-volume, caption inclusion, existing v2 production controls, and reusable
-production presets. Every save creates an immutable numbered plan snapshot and
-invalidates any older preview. Final approval atomically saves
-`approved-edit-plan.json` and `opencut.project.json` beside the project's
-`renders` directory, invokes the higher-quality FFmpeg profile, and records
-source/plan hashes, reviewer notes, and either the rendered or failed state.
-The bridge remains local-only and never uploads or publishes media.
-
-For every candidate, the review workspace can show strategy and rationale
-metadata: whether it is meant to be a distinct moment, a narrative segment from
-one longer clip, a social-format variant, an archive summary, or a manual
-reviewer option. Candidate cards also surface per-clip rationale when provided,
-so reviewers can understand why source ranges were chosen instead of guessing
-from timestamps alone.
-
-For v2 candidates, the review workspace identifies plan version, total layered
-clip count, overlay/audio track counts, transitions, title cards, caption
-treatment, ducking, and all video/audio/caption assets. The inspector can revise
-the primary A-roll plus existing v2 production controls: overlay timing/source
-range/canvas placement/fit/opacity/audio, audio track role/timing/source/volume,
-transition type/duration, title-card text/timing/colors/layout/opacity/font
-scale, subtitle-provider metadata, caption style, and smart ducking. The
-subtitle provider selector exposes local Whisper, OpenAI API, OpenRouter, or
-provided captions with cost/privacy guidance. The adjacent setup check verifies
-the bridge can see FFmpeg/ffprobe plus the selected provider's command, API key,
-or supplied caption file without rendering, transcribing, or uploading. The
-generation action can then confirm an attached caption asset or extract the
-selected candidate's audio and run the approved provider. The resulting SRT is
-attached to the plan as a new numbered revision and invalidates any older
-preview. The Caption QA panel can edit cue text and start/end times, then save a
-new local SRT and revision before preview/final approval.
-The preview monitor also provides a WYSIWYG layer surface for existing visual
-elements: overlay/title boxes can be dragged, resized, clicked for selection,
-and keyboard-nudged, while burned-in caption placement can be moved between safe
-top/middle/bottom zones by dragging the caption preview. Every change still
-flows through the immutable revision endpoint and requires a fresh preview
-before final approval. The approval panel
-displays backend preflight checks for the next preview or final action, and
-rendered candidates can be bundled into a timestamped export package containing
-MP4 copies, approved plans, project records, captions, contact sheets, a
-manifest, and a summary.
-
-## Candidate review sessions
-
-### Transcript edits (bridge 0.10.0)
-
-The review UI exposes transcript seeking, whole-cue keep/remove proposals,
-standalone filler suggestions, audio pause analysis, four local revision commands,
-and restore-previous-revision. No remote model executes these commands.
-
-These are HTTP review actions rather than additional MCP tools:
-
-- `POST /v1/review-sessions/:id/edits/propose`: supply `candidateId`,
-  `expectedRevision`, `approvalToken`, typed `operation`, and optional
-  `protectedRanges` in output-timeline seconds. Operations are `keep`/`remove`
-  with `{start,end}` ranges, `shorten` with `seconds`, and `move-first` with `clipId`.
-- `POST .../edits/apply`: supply the same identity/revision/token and the returned
-  opaque `proposalId`. The saved server-side proposal expires after 30 minutes.
-- `POST .../edits/undo`: restore the preceding saved snapshot as a new revision.
-- `POST .../edits/silence`: analyze primary audio locally (−35 dB, at least 0.6 s,
-  retaining 120 ms source padding). Supports 40 clips / 10 source minutes, with a
-  45-second analysis budget. The response contains suggestions, not cuts.
-
-Proposing does not write project files. Applying rechecks the current revision and
-plan hash, preserves non-caption assets/project/output settings, writes a separate
-retimed SRT and immutable snapshots, and invalidates the previous preview. Competing
-views share a manifest-level edit lock; stale requests return HTTP 409. Render
-preflight is rechecked before reserving the render action. Rendered candidates stay
-immutable. Protections belong to a proposal and must be selected again after saving.
-
-Production layers follow retained spans. Crossfades become hard cuts at their
-midpoints, with a warning before saving. A caption crossing a cut is omitted rather
-than assigned invented word timings, and flagged for regeneration. Restoring a
-snapshot restores that snapshot's caption asset too. These edits do not connect
-the bridge to OpenCut's future native Editor API.
-
-For a real agent workflow, use an opaque review session instead of embedding an
-entire plan in the browser URL. The agent creates one isolated directory per
-candidate and a small `review-session.json` manifest:
-
-```text
-video-workspace/
-├── source.mp4
-├── review-session.json
-└── candidates/
-    ├── concise/
-    │   └── edit-plan.json       # output: candidates/concise/renders/output.mp4
-    └── contextual/
-        └── edit-plan.json       # output: candidates/contextual/renders/output.mp4
-```
-
-```json
-{
-  "version": "1",
-  "id": "interview-highlights",
-  "title": "Choose an interview highlight",
-  "sourceAssets": [
-    { "id": "source", "label": "Original interview", "path": "source.mp4" }
-  ],
-  "candidates": [
-    {
-      "id": "concise",
-      "title": "Concise answer",
-      "summary": "Fast opening with one core idea",
-      "strategy": "distinct-moment",
-      "rationale": "This candidate isolates the cleanest self-contained answer rather than splitting one longer clip into hook/body/close.",
-      "clipRationales": [
-        {
-          "clipId": "core-answer",
-          "note": "Starts after the setup and ends before the speaker changes topic."
-        }
-      ],
-      "planPath": "candidates/concise/edit-plan.json",
-      "status": "ready-for-review",
-      "revision": 1
-    }
-  ],
-  "reviewerNotes": [],
-  "events": [],
-  "renderBatches": [],
-  "exportPackages": [],
-  "updatedAt": "2026-07-16T00:00:00.000Z"
-}
-```
-
-Launch both the loopback bridge and web workspace with one command:
+For a Codex TOML snippet, use `opencut-setup` and review the generated file before
+merging it into your configuration. A standalone stdio server uses:
 
 ```sh
-OPENCUT_AGENT_ROOT="/absolute/path/to/video-workspace" \
-  apps/agent-bridge/bin/opencut-review \
-  /absolute/path/to/video-workspace/review-session.json
+OPENCUT_AGENT_ROOT="/absolute/path/to/media-folder" \
+  apps/agent-bridge/bin/opencut-agent
 ```
 
-The launcher prints a short URL containing only an opaque session ID. The web
-workspace then streams large local media with HTTP byte ranges, restores the
-selected candidate after refresh, loads only session-authorized captions,
-detects already-rendered outputs, and never asks the reviewer to select the
-multi-gigabyte source file again.
+`opencut_render_preview` defaults to 30 s and accepts up to 300 s. MCP final and
+preflight render-limit inputs also stop at 300 s. These direct bounded tool calls
+do not imply session preview/final approval. Long full-video projects use the main
+editor's HTTP workflow with explicit UI preview and final actions. Check
+[operating limits](../../FEATURES.md#operating-limits) before selecting an interface.
 
-Candidate selection, provider setup checks, caption QA saves, preview rendering, batch inclusion, and final approval are
-deliberately separate actions. Selecting a card cannot start FFmpeg. The visible
-six-step workflow explains the current state: **Select**, **Save**,
-**Captions**, **Preview**, **Approve**, and **Export**. Caption generation or
-provided-caption confirmation creates a new revision, and caption QA edits must
-be saved or reset before a preview/final render. The **Render preview** action produces
-a fast revision-specific file; **Approve final** stays locked until that exact
-revision has a preview. Preview-approved candidates can also be added to a batch
-queue and rendered sequentially through one explicit **Approve batch** action.
-Batch item state is persisted as queued,
-rendering, rendered, or failed so the reviewer can poll progress and retry only
-failed candidates. Backend preflight checks are enforced for preview, final,
-batch, and export actions, so the UI status is not merely cosmetic. The final
-renderer uses a higher-quality profile and records an append-only audit trail.
-Each candidate's revision snapshots, previews, approved plan, project record,
-and final render stay inside that candidate's directory. Export packages are
-written under `exports/` beside the review manifest and copy only rendered
-outputs plus lightweight handoff metadata, not the original large source video.
+## Agent preparation workflow
 
-The HTTP surface for this workflow is:
+1. Inspect capabilities and every source. Keep media and generated projects outside
+   the code checkout and inside the chosen media root.
+2. Prepare a validated v1/v2 plan or separate candidate plans. Multiple highlights
+   should be distinct moments by default, with strategy/rationale and source-range
+   notes rather than three nearly identical timestamp variants.
+3. Prefer supplied/local transcription. Check setup before provider work and obtain
+   explicit named-provider consent before external audio upload. Caption files must
+   use the output timeline and need wording/timing review.
+4. Save isolated plans and register/launch their manifest, or use a persistent main
+   project. Keep revision, selection, caption, preview and final decisions separate.
+5. For real-media review, leave preview/final/batch actions to the visible reviewer
+   controls. Selecting a candidate or approving an external provider is not render
+   approval. Generated-media integration smokes exercise these paths separately.
+6. Verify successful outputs and package them only for an authorized handoff.
+   Publishing requires a separate destination-specific workflow.
 
-- `POST /v1/review-sessions` — register a manifest and issue an opaque ID;
-- `GET /v1/review-sessions/:id` — restore manifest and render state;
-- `POST /v1/review-sessions/:id/select` — persist selection only;
-- `POST /v1/review-sessions/:id/revise` — validate, snapshot, and save a numbered revision;
-- `POST /v1/review-sessions/:id/notes` — append a revision-specific reviewer note;
-- `GET|HEAD /v1/review-sessions/:id/media/:assetId` — authorized range streaming;
-- `GET /v1/review-sessions/:id/candidates/:candidateId/captions` — authorized captions;
-- `GET /v1/review-sessions/:id/system-check` — read-only FFmpeg/ffprobe/provider readiness checks;
-- `POST /v1/review-sessions/:id/generate-captions` — token-gated caption generation or provided-caption confirmation for the selected candidate;
-- `POST /v1/review-sessions/:id/revise-captions` — token-gated caption text/timing QA save as a new revision;
-- `POST /v1/review-sessions/:id/preflight` — read-only checks before preview, final, batch, or export actions;
-- `POST /v1/review-sessions/:id/render-preview` — token-gated fast preview;
-- `GET|HEAD /v1/review-sessions/:id/candidates/:candidateId/preview` — stream the authorized preview;
-- `POST /v1/review-sessions/:id/approve-and-render` — token-gated final render after preview;
-- `POST /v1/review-sessions/:id/approve-batch` — token-gated sequential final render for preview-approved candidates;
-- `POST /v1/review-sessions/:id/export-package` — token-gated local handoff package for rendered candidates.
+## Plans and rendering
 
-Session IDs are process-local: restarting the bridge creates a new short URL,
-while the manifest's selected, batch, and rendered state remains on disk.
+The shared [schema](src/schema.ts) is consumed by the bridge and web app:
 
-See [USER_GUIDE.md](USER_GUIDE.md) for a concise reviewer workflow and the
-current product gaps around new layer creation, keyframes, and caption-quality
-repair.
+- V1: sequential primary clips and selectable captions;
+- V2: primary timeline, z-ordered overlays, independent audio tracks, adjacent-clip
+  transitions, timed title cards, subtitle-provider metadata, styled captions and
+  speech-keyed music ducking.
 
-## Main-project API (0.11.0)
+Examples: [v1](examples/demo.edit-plan.json) and
+[v2 production](examples/multitrack.edit-plan.json).
 
-- `GET /v1/workspace-projects`: library records and the configured media root.
-- `POST /v1/workspace-projects`: create `{name, sourcePath}` with a full-length v2 plan.
-- `POST /v1/workspace-projects/:id/open`: register a fresh opaque session for a stable project.
-- `POST /v1/workspace-projects/:id/media`: inspect/import `{path}` inside the media root.
-- `POST /v1/workspace-projects/:id/clips`: create `{title, start, end, expectedRevision}`
-  as an isolated child review; snapshot locks exclude concurrent saves.
-- `POST /v1/workspace-projects/:id/duplicate`: create a new editable master/output folder.
-- `GET /v1/review-sessions/:session/candidates/:candidate/output`: stream an existing
-  final; `?download=1` supplies an attachment filename and supports byte ranges.
+Clip duration comes from source ranges/speed; v2 also accounts for transitions and
+layer/audio/title ends. Main projects can import media and create/remove production
+layers. Clip reviews adjust plan-authored media/layers. Existing source identities
+cannot be replaced under the same asset ID; the final output contract stays
+isolated to its candidate directory.
 
-Existing session edit/caption/preview/final/export endpoints are reused. Full
-projects have `kind: "full-project"`; old manifests default to `clip-review`.
-Full-project render limits can reach 14,400 seconds; clip defaults remain unchanged.
-Full-project saves can add media and change canvas settings, while asset identity,
-revision checks, output isolation and final immutability remain enforced. Caption
-coverage invalidated by added footage must be updated before preview/final export.
-See [MAIN_EDITOR_GUIDE.md](MAIN_EDITOR_GUIDE.md).
+FFmpeg runs without a shell. Preview uses ultrafast/CRF 32; final uses medium/CRF 20.
+Still overlay images loop for their selected duration. Titles and caption text are
+rasterized locally without requiring libass. More than 40 caption cues use one
+transparent caption movie; the former 200-cue ceiling no longer applies. Graphics
+are cached below `.opencut-agent/render-assets/`. Caption files and request bodies
+still have size/count limits; long-caption cues must not overlap.
 
-`bun run smoke:project` exercises a 301-second generated project with 201 captions,
-PNG watermark, title, preview/final separation, download, derived clip, package,
-editable copy and reopening after a server restart.
+Successful MP4s publish atomically. A failed FFmpeg job does not publish a partial
+final. Shutdown terminates media processes. Approved plans/project records contain
+source/plan hashes and available reviewer/provenance information. No publishing
+endpoint is implemented.
+
+## HTTP: projects and library
+
+All paths below are relative to the local bridge URL. `:project` is a persistent
+library ID; `:session` is a process-local opaque registration; `:candidate` identifies
+a candidate inside its manifest. The usual full-video candidate is `master`.
+
+| Method and path | Request / result |
+| --- | --- |
+| `GET /health` | Bridge status/version and whether a render is active |
+| `GET /v1/workspace-projects` | Library records and configured `mediaRoot`; no unrelated disk scan |
+| `POST /v1/workspace-projects` | `{name, sourcePath}` → full-source v2 project record |
+| `POST /v1/workspace-projects/:project/open` | `{}` → project record, fresh `sessionId`, `approvalToken` |
+| `POST /v1/workspace-projects/:project/media` | `{path}` → bounded local inspection/import metadata; VTT becomes a separate SRT |
+| `POST /v1/workspace-projects/:project/clips` | `{title, start, end, expectedRevision}` → isolated child project and warnings |
+| `POST /v1/workspace-projects/:project/duplicate` | `{}` → independent editable master/output folder |
+
+Full projects use manifest `kind: "full-project"`; old manifests default to
+`clip-review`. Main opening chooses its saved master; opening a clip project from
+the library redirects to its review flow. Imported images are represented by video
+assets with `stillImage` inspection metadata, not a new schema asset kind.
+
+Child ranges use saved **output-timeline seconds**, must be in range and at most
+120 s, and do not modify the parent. Snapshot locks exclude concurrent parent saves
+while deriving a child/copy. Reopening an interrupted main project makes its saved
+draft available for retry when no render is active.
+
+## HTTP: review, edits and outputs
+
+| Method and path | Purpose |
+| --- | --- |
+| `POST /v1/review-sessions` | `{manifestPath}` → register a saved manifest and remember it in the library |
+| `GET /v1/review-sessions/:session` | Loaded plans, saved selection, revisions and output state |
+| `POST /v1/review-sessions/:session/select` | `{candidateId}` → select only; no render |
+| `POST /v1/review-sessions/:session/revise` | `{candidateId, plan, expectedRevision, note?}` → numbered saved revision |
+| `POST /v1/review-sessions/:session/notes` | `{candidateId, text}` → reviewer note |
+| `GET\|HEAD /v1/review-sessions/:session/media/:asset` | Session-authorized byte-range media stream |
+| `GET /v1/review-sessions/:session/candidates/:candidate/captions` | Session-authorized caption text |
+| `GET /v1/review-sessions/:session/system-check` | Read-only FFmpeg/ffprobe/provider readiness |
+| `POST /v1/review-sessions/:session/generate-captions` | Token-gated provider run / supplied-caption confirmation |
+| `POST /v1/review-sessions/:session/revise-captions` | Token-gated cue correction save |
+| `POST /v1/review-sessions/:session/preflight` | Read-only next-action checks |
+| `POST /v1/review-sessions/:session/render-preview` | Token-gated revision-specific preview |
+| `GET\|HEAD /v1/review-sessions/:session/candidates/:candidate/preview` | Authorized preview stream |
+| `POST /v1/review-sessions/:session/approve-and-render` | Separate token-gated final; requires current preview |
+| `POST /v1/review-sessions/:session/approve-batch` | Explicit sequential batch approval |
+| `POST /v1/review-sessions/:session/export-package` | Token-gated package for completed candidates |
+| `GET\|HEAD /v1/review-sessions/:session/candidates/:candidate/output` | Existing final stream; `?download=1` sets an attachment filename |
+
+Use the source [HTTP schemas](src/http.ts) for exact bodies, defaults and optional
+fields. Render requests identify `candidateId`, `approvalToken` and
+`renderLimitSeconds`. Batch requests use distinct `candidateIds`. Caption generation
+adds `externalUploadApproved` only after the user explicitly approves the named
+external provider. Tokens are returned by registration/opening; never embed them
+in URLs, logs or documentation.
+
+The main UI requests the full saved duration, up to 14,400 s. Clip UI requests 60 s
+for preview and 300 s for final/batch. Clip preview HTTP requests are capped at
+120 s; clip single-final HTTP requests at 300 s. The raw batch schema has a 14,400 s
+ceiling, distinct from its UI's 300 s request. Oversized finals are blocked rather
+than truncated; export packaging itself does not render the timeline.
+
+### Editorial proposals
+
+All editorial routes use `/v1/review-sessions/:session/edits/`:
+
+| Action | Body / behavior |
+| --- | --- |
+| `propose` | `candidateId`, `expectedRevision`, `approvalToken`, typed `operation`, optional `protectedRanges` |
+| `apply` | Same identity/revision/token plus returned `proposalId`; explicit save |
+| `undo` | Same identity/revision/token; restore the preceding snapshot as a new revision |
+| `silence` | Same identity/revision/token; read local audio and return pause suggestions |
+
+Operations are `keep`/`remove` with `{start,end}` range arrays, `shorten` with
+`seconds` (0.1–300), and `move-first` with `clipId`. Ranges/protection use output-timeline
+seconds. Proposals expire after 30 minutes, and applying checks both revision and
+plan hash. Review edit conflicts return HTTP 409. Manifest-level locks are shared
+across registered views in the process. Save/retry is required after stale work;
+a client must not silently overwrite a newer saved plan.
+
+Production layers/captions follow retained speech. Existing crossfades are flattened
+to midpoint cuts with a warning. A partially cut cue is omitted and flagged for
+regeneration. Protection is proposal-specific. Undo includes the earlier caption
+asset and can restore a main edit before media import; it does not undo a final.
+Pause analysis uses −35 dB / at least 0.6 s with source padding, up to 40 cuts / ten
+source minutes and a 45 s budget. See [silence.ts](src/silence.ts).
+
+Direct numeric inspector edits are separate from these retiming operations. A
+saved plan's preview must be reviewed for layout, timing and mix before approval.
+
+## Storage and identity
+
+```text
+media-root/
+├── source-video.mp4                         # original stays in place
+├── .opencut-agent/
+│   ├── projects/<project-id>.json           # persistent library record
+│   ├── imports/                            # normalized imported captions
+│   └── render-assets/                      # generated local graphics/cache
+└── opencut-projects/<project-id>/
+    ├── review-session.json                  # state, notes, events, candidate refs
+    ├── candidates/master/
+    │   ├── edit-plan.json                   # current saved plan
+    │   ├── revisions/revision-*.edit-plan.json
+    │   ├── ...                              # generated caption revisions
+    │   ├── approved-edit-plan.json          # after approval
+    │   ├── opencut.project.json             # final render/provenance record
+    │   └── renders/                         # revision previews and final MP4
+    └── exports/<package-id>/                # rendered copies and handoff metadata
+```
+
+Agent-prepared review manifests may use their existing layout. Each candidate's
+output must remain in its own candidate directory, normally `renders/output.mp4`.
+Do not target shared output directories across candidates. Final candidates stay
+immutable. New main copies/children get independent output paths.
+
+Library IDs and manifests persist. Session/action/proposal IDs are process-local;
+reopen/register after a restart rather than persisting the action token as a
+credential. Back up library records, project folders and every referenced source/
+logo/audio/caption file. Export packages contain outputs and available metadata,
+not the original large sources.
+
+## Legacy encoded-plan links
+
+`/?plan=<URL-encoded JSON>` remains supported for standalone imported plans. This
+is the older direct-render approval flow without saved-session preview gates. It
+is not the projects home's Create project action. Prefer persistent projects or
+registered manifests for new work. The root `/` now opens the project library.
+
+## Validation and troubleshooting
+
+Run checks from the indicated package using its installed runtime:
+
+```sh
+(cd apps/agent-bridge && ./node_modules/.bin/bun test)
+(cd apps/agent-bridge && ./node_modules/.bin/tsc --noEmit)
+(cd apps/agent-bridge && ./node_modules/.bin/bun run build)
+(cd apps/web && ./node_modules/.bin/vitest run)
+(cd apps/web && ./node_modules/.bin/tsc --noEmit)
+(cd apps/web && ../agent-bridge/node_modules/.bin/bun run build)
+```
+
+Generated-media integration checks (from `apps/agent-bridge`):
+
+```sh
+./node_modules/.bin/bun run smoke
+./node_modules/.bin/bun run smoke:render
+./node_modules/.bin/bun run smoke:approval
+./node_modules/.bin/bun run smoke:production
+./node_modules/.bin/bun run smoke:editorial
+./node_modules/.bin/bun run smoke:review
+./node_modules/.bin/bun run smoke:project
+```
+
+The last implementation pass recorded 66 bridge tests, 24 web tests, both builds/
+typechecks, and main/editorial/review integration smokes. `smoke:project` validates
+a generated 301 s project with 201 captions, watermark/title, preview/final gate,
+range download, child isolation, package, editable copy, restart and interrupted
+master recovery. This is not evidence that the real podcast was rendered or that
+external providers were tested. See [verification](../../verification/2026-10-26-main-editor.md).
+
+For missing assets, path-root errors, stale sessions, provider setup, final
+immutability or relative export paths, follow the troubleshooting table in the
+[main editor guide](MAIN_EDITOR_GUIDE.md#reopen-and-recovery). Upstream desktop
+builds and native editor integration are separate from this bridge.
