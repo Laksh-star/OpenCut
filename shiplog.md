@@ -92,4 +92,12 @@ historical runtime validation is only reported where separately recorded.
 - Delivery branch: `codex/agent-bridge-mvp`, on the user fork. This is a local feature
   version, not a public GitHub release or native Editor API integration. External
   transcription providers and the upstream native desktop shell were not exercised.
+- Promoted implementation `5c8d8178` into the normal `.opencut-runtime` checkout
+  and pushed it to `origin/codex/agent-bridge-mvp`. Fresh runtime startup and browser
+  loading passed with no console errors or failed local requests. The workspace-root
+  `shiplog.md` points to this versioned record.
+- Preserved rollback reference `codex/agent-bridge-before-2026-10-26` at `4cb4df6a`.
+  The former dependency links are saved under `.opencut-local`; active dependencies
+  are independent directories. The disposable integration checkout was removed
+  after promotion; its branch and commits remain available in Git.
 - Full evidence and remaining limits: [verification/2026-10-26.md](verification/2026-10-26.md).
