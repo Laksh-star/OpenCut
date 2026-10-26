@@ -9,11 +9,15 @@ export type ProcessResult = {
 export const runProcess = (
   command: string,
   args: string[],
-  options: { maxOutputBytes?: number } = {}
+  options: { maxOutputBytes?: number; timeoutMs?: number } = {}
 ) =>
   new Promise<ProcessResult>((resolvePromise, rejectPromise) => {
     const maxOutputBytes = options.maxOutputBytes ?? 2_000_000;
     const child = spawn(command, args, { shell: false, stdio: ["ignore", "pipe", "pipe"] });
+    const timeout = options.timeoutMs ? setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectPromise(new Error(`${command} exceeded the analysis time limit`));
+    }, options.timeoutMs) : undefined;
     let stdout = "";
     let stderr = "";
 
@@ -25,8 +29,9 @@ export const runProcess = (
     child.stderr.on("data", (chunk: string) => {
       stderr = `${stderr}${chunk}`.slice(-maxOutputBytes);
     });
-    child.on("error", rejectPromise);
+    child.on("error", (error) => { clearTimeout(timeout); rejectPromise(error); });
     child.on("close", (code) => {
+      clearTimeout(timeout);
       resolvePromise({ exitCode: code ?? -1, stdout, stderr });
     });
   });

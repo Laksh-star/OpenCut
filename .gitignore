@@ -9,3 +9,8 @@ docs/
 
 # moon runtime cache
 .moon/cache/
+.cache/
+.opencut-local/
+apps/web/.wrangler/
+apps/web/.output/
+apps/web/.tanstack/

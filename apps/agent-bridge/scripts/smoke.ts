@@ -18,8 +18,8 @@ const capabilityResult = await client.callTool({
   arguments: {},
 });
 
-if (tools.tools.length !== 11) {
-  throw new Error(`Expected 11 tools, received ${tools.tools.length}`);
+if (tools.tools.length < 14) {
+  throw new Error(`Expected at least 14 current bridge tools, received ${tools.tools.length}`);
 }
 
 if (!tools.tools.some((tool) => tool.name === "opencut_build_word_timed_captions")) {

@@ -1,5 +1,11 @@
 # OpenCut AI-Agent Extension Project Report
 
+**26 October 2026 update:** the historical report below describes the July baseline.
+The fork now also includes transcript edit proposals, local revision commands,
+pause suggestions, revision restoration, and upstream foundations through
+`e6680107`. See [shiplog.md](shiplog.md) for the maintained development record and
+[the verification report](verification/2026-10-26.md) for current evidence and limits.
+
 **Status date:** 22 July 2026
 **Fork:** [Laksh-star/OpenCut](https://github.com/Laksh-star/OpenCut)
 **Upstream:** [OpenCut-app/OpenCut](https://github.com/OpenCut-app/OpenCut)

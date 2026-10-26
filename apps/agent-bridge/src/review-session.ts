@@ -6,6 +6,8 @@ import { dirname, posix } from "node:path";
 import { z } from "zod/v4";
 
 import { captionsToSrt, normalizeCaptionCues, type CaptionCue } from "./captions.ts";
+import { parseCaptionFile } from "./caption-file.ts";
+import { proposeEditorialEdit, type EditorialOperation, type EditorialProposal, type TimeRange } from "./editorial.ts";
 import { readEditPlan, writeEditPlan, writeJsonFile } from "./files.ts";
 import { getWorkspaceRoot, resolveInputPath, resolveOutputPath } from "./paths.ts";
 import { editPlanSchema, type EditPlan } from "./schema.ts";
@@ -250,8 +252,110 @@ const hashPath = async (path: string) => {
 
 type RegisteredSession = { manifestPath: string; approvalToken: string };
 
+const planHash = (plan: EditPlan) => createHash("sha256").update(JSON.stringify(plan)).digest("hex");
+type SavedProposal = {
+  sessionId: string;
+  candidateId: string;
+  revision: number;
+  hash: string;
+  createdAt: number;
+  proposal: EditorialProposal;
+};
+
+export class StaleRevisionError extends Error {}
+
 export class ReviewSessionRegistry {
   private sessions = new Map<string, RegisteredSession>();
+  private proposals = new Map<string, SavedProposal>();
+  private editingSessions = new Set<string>();
+  private updates = new Map<string, Promise<void>>();
+
+  private async exclusiveEdit<T>(sessionId: string, action: () => Promise<T>): Promise<T> {
+    const key = this.get(sessionId).manifestPath;
+    if (this.editingSessions.has(key)) throw new StaleRevisionError("An edit is being saved. Refresh before trying again.");
+    this.editingSessions.add(key);
+    try { return await action(); } finally { this.editingSessions.delete(key); }
+  }
+
+  isEditing(sessionId: string) { return this.editingSessions.has(this.get(sessionId).manifestPath); }
+
+  async proposeEdit(sessionId: string, candidateId: string, expectedRevision: number, operation: EditorialOperation, protectedRanges: TimeRange[] = []) {
+    const loaded = await this.load(sessionId);
+    const candidate = loaded.candidates.find((entry) => entry.id === candidateId);
+    if (!candidate) throw new Error("Unknown candidate");
+    if (candidate.revision !== expectedRevision) throw new StaleRevisionError("This candidate changed. Refresh before proposing another edit.");
+    if (candidate.outputExists || ["queued", "rendering", "previewing", "rendered"].includes(candidate.status)) throw new Error("This candidate is locked. Select an unrendered candidate that is not busy.");
+    const root = await getWorkspaceRoot();
+    const captionAsset = candidate.plan.assets.find((asset) => asset.id === candidate.plan.timeline.captionsAssetId);
+    let cues: CaptionCue[] = [];
+    if (captionAsset) {
+      const path = await resolveInputPath(root, captionAsset.path);
+      if ((await stat(path)).size > 1_000_000) throw new Error("Caption file exceeds the 1 MB editing limit.");
+      cues = parseCaptionFile(await readFile(path, "utf8"));
+      if (!cues.length || cues.length > 500) throw new Error("Transcript editing needs 1–500 valid caption cues. Check the caption file first.");
+    }
+    const proposal = proposeEditorialEdit(candidate.plan, operation, cues, protectedRanges);
+    for (const [id, saved] of this.proposals) {
+      if (Date.now() - saved.createdAt > 30 * 60_000 || saved.candidateId === candidateId && saved.sessionId === sessionId) this.proposals.delete(id);
+    }
+    if (this.proposals.size >= 100) this.proposals.delete(this.proposals.keys().next().value!);
+    const proposalId = randomUUID();
+    this.proposals.set(proposalId, { sessionId, candidateId, revision: candidate.revision, hash: planHash(candidate.plan), createdAt: Date.now(), proposal });
+    return { proposalId, revision: candidate.revision, ...proposal };
+  }
+
+  async applyEdit(sessionId: string, candidateId: string, expectedRevision: number, proposalId: string) {
+    return this.exclusiveEdit(sessionId, async () => {
+      const saved = this.proposals.get(proposalId);
+      if (!saved || saved.sessionId !== sessionId || saved.candidateId !== candidateId || Date.now() - saved.createdAt > 30 * 60_000) throw new StaleRevisionError("This proposal expired. Propose the edit again.");
+      if (saved.revision !== expectedRevision) throw new StaleRevisionError("This proposal belongs to an older revision.");
+      const loaded = await this.load(sessionId);
+      const candidate = loaded.candidates.find((entry) => entry.id === candidateId)!;
+      if (candidate.revision !== expectedRevision || planHash(candidate.plan) !== saved.hash) throw new StaleRevisionError("This candidate changed. Refresh and propose the edit again.");
+      if (candidate.outputExists || ["queued", "previewing", "rendering", "rendered"].includes(candidate.status)) throw new Error("This candidate is locked and cannot be edited.");
+      const root = await getWorkspaceRoot();
+      let plan = saved.proposal.plan;
+      const captionId = plan.timeline.captionsAssetId;
+      if (captionId) {
+        if (saved.proposal.captions.length) {
+          const captionPath = posix.join(candidateDirectoryFor(candidate), "captions", `editorial-r${expectedRevision + 1}-${proposalId}.srt`);
+          const path = await resolveOutputPath(root, captionPath);
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(path, captionsToSrt(saved.proposal.captions), { flag: "wx" });
+          plan = editPlanSchema.parse({ ...plan, assets: plan.assets.map((asset) => asset.id === captionId ? { ...asset, path: captionPath } : asset) });
+        } else {
+          plan = editPlanSchema.parse({ ...plan, timeline: { ...plan.timeline, captionsAssetId: undefined,
+            ...(plan.version === "2" ? { subtitleProvider: { ...plan.timeline.subtitleProvider,
+              mode: plan.timeline.subtitleProvider?.mode === "provided-captions" ? "local-whisper" : plan.timeline.subtitleProvider?.mode ?? "local-whisper",
+              status: "needs-generation",
+            } } : {}),
+          } });
+        }
+      }
+      const session = await this.saveCandidateRevision(sessionId, candidateId, plan,
+        `Transcript edit: ${saved.proposal.operation.type}. ${saved.proposal.changes[0]}`, {
+          expectedRevision, expectedHash: saved.hash, captionAssetsAllowed: true,
+        });
+      this.proposals.delete(proposalId);
+      return session;
+    });
+  }
+
+  async undoEdit(sessionId: string, candidateId: string, expectedRevision: number) {
+    return this.exclusiveEdit(sessionId, async () => {
+      const loaded = await this.load(sessionId);
+      const candidate = loaded.candidates.find((entry) => entry.id === candidateId);
+      if (!candidate || candidate.revision <= 1) throw new Error("There is no earlier revision to restore.");
+      if (candidate.revision !== expectedRevision) throw new StaleRevisionError("This candidate changed. Refresh before undoing.");
+      const root = await getWorkspaceRoot();
+      const snapshot = posix.join(candidateDirectoryFor(candidate), "revisions", `revision-${candidate.revision - 1}.edit-plan.json`);
+      const plan = await readEditPlan(await resolveInputPath(root, snapshot));
+      for (const asset of plan.assets) await resolveInputPath(root, asset.path);
+      return this.saveCandidateRevision(sessionId, candidateId, plan, `Restore revision ${candidate.revision - 1} as a new revision`, {
+        expectedRevision, expectedHash: planHash(candidate.plan), captionAssetsAllowed: true,
+      });
+    });
+  }
 
   async register(requestedManifestPath: string) {
     const root = await getWorkspaceRoot();
@@ -276,19 +380,37 @@ export class ReviewSessionRegistry {
 
   async update(sessionId: string, mutate: (session: ReviewSession) => ReviewSession) {
     const registered = this.get(sessionId);
-    const session = await readReviewSession(registered.manifestPath);
-    const next = reviewSessionSchema.parse(mutate(session));
-    await writeJsonFile(registered.manifestPath, next);
-    return this.load(sessionId);
+    const key = registered.manifestPath;
+    const previous = this.updates.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    this.updates.set(key, pending);
+    await previous;
+    try {
+      const session = await readReviewSession(key);
+      const next = reviewSessionSchema.parse(mutate(session));
+      await writeJsonFile(key, next);
+      return await this.load(sessionId);
+    } finally {
+      release();
+      if (this.updates.get(key) === pending) this.updates.delete(key);
+    }
   }
 
-  async reviseCandidate(sessionId: string, candidateId: string, value: unknown, note?: string) {
+  async reviseCandidate(sessionId: string, candidateId: string, value: unknown, note?: string,
+    options: { expectedRevision?: number; expectedHash?: string; captionAssetsAllowed?: boolean } = {}) {
+    return this.exclusiveEdit(sessionId, () => this.saveCandidateRevision(sessionId, candidateId, value, note, options));
+  }
+
+  private async saveCandidateRevision(sessionId: string, candidateId: string, value: unknown, note?: string,
+    options: { expectedRevision?: number; expectedHash?: string; captionAssetsAllowed?: boolean } = {}) {
     const root = await getWorkspaceRoot();
     const registered = this.get(sessionId);
     const session = await readReviewSession(registered.manifestPath);
     const candidate = session.candidates.find((entry) => entry.id === candidateId);
     if (!candidate) throw new Error("Unknown candidate");
-    if (candidate.status === "queued" || candidate.status === "rendering") {
+    if (options.expectedRevision !== undefined && candidate.revision !== options.expectedRevision) throw new StaleRevisionError("This candidate changed. Refresh before saving.");
+    if (candidate.status === "queued" || candidate.status === "rendering" || candidate.status === "previewing") {
       throw new Error("Queued or rendering candidates cannot be revised");
     }
     if (candidate.status === "rendered") {
@@ -296,9 +418,12 @@ export class ReviewSessionRegistry {
     }
     const planPath = await resolveInputPath(root, candidate.planPath);
     const currentPlan = await readEditPlan(planPath);
+    if (options.expectedHash && planHash(currentPlan) !== options.expectedHash) throw new StaleRevisionError("The saved plan changed. Refresh before saving.");
+    if (await fileExists(root, currentPlan.output.path)) throw new Error("Rendered candidates are immutable; create a new candidate to revise them");
     const nextPlan = editPlanSchema.parse(value);
     assertCandidateOutput(candidate, nextPlan.output.path);
-    if (JSON.stringify(nextPlan.assets) !== JSON.stringify(currentPlan.assets)) {
+    const protectedAssets = (plan: EditPlan) => options.captionAssetsAllowed ? plan.assets.filter((asset) => asset.kind !== "captions") : plan.assets;
+    if (JSON.stringify(protectedAssets(nextPlan)) !== JSON.stringify(protectedAssets(currentPlan))) {
       throw new Error("Review revisions cannot replace candidate assets");
     }
     if (JSON.stringify(nextPlan.project) !== JSON.stringify(currentPlan.project)) {
@@ -329,6 +454,7 @@ export class ReviewSessionRegistry {
         previewOutputPath: undefined,
         status: current.selectedCandidateId === candidateId ? "selected" : "ready-for-review",
         error: undefined,
+        clipRationales: entry.clipRationales.filter((rationale) => nextPlan.timeline.clips.some((clip) => clip.id === rationale.clipId)),
       } : entry),
       events: [...current.events, createReviewEvent("plan-revised", {
         actor: "reviewer",
@@ -358,6 +484,10 @@ export class ReviewSessionRegistry {
   }
 
   async generateCaptions(sessionId: string, candidateId: string, options: CaptionGenerationOptions = {}) {
+    return this.exclusiveEdit(sessionId, () => this.generateCaptionsExclusive(sessionId, candidateId, options));
+  }
+
+  private async generateCaptionsExclusive(sessionId: string, candidateId: string, options: CaptionGenerationOptions) {
     const root = await getWorkspaceRoot();
     const registered = this.get(sessionId);
     const session = await readReviewSession(registered.manifestPath);
@@ -459,6 +589,10 @@ export class ReviewSessionRegistry {
   }
 
   async reviseCaptions(sessionId: string, candidateId: string, value: unknown, note?: string) {
+    return this.exclusiveEdit(sessionId, () => this.reviseCaptionsExclusive(sessionId, candidateId, value, note));
+  }
+
+  private async reviseCaptionsExclusive(sessionId: string, candidateId: string, value: unknown, note?: string) {
     const root = await getWorkspaceRoot();
     const registered = this.get(sessionId);
     const session = await readReviewSession(registered.manifestPath);

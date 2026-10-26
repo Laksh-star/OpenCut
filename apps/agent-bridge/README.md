@@ -190,6 +190,38 @@ manifest, and a summary.
 
 ## Candidate review sessions
 
+### Transcript edits (bridge 0.10.0)
+
+The review UI exposes transcript seeking, whole-cue keep/remove proposals,
+standalone filler suggestions, audio pause analysis, four local revision commands,
+and restore-previous-revision. No remote model executes these commands.
+
+These are HTTP review actions rather than additional MCP tools:
+
+- `POST /v1/review-sessions/:id/edits/propose`: supply `candidateId`,
+  `expectedRevision`, `approvalToken`, typed `operation`, and optional
+  `protectedRanges` in output-timeline seconds. Operations are `keep`/`remove`
+  with `{start,end}` ranges, `shorten` with `seconds`, and `move-first` with `clipId`.
+- `POST .../edits/apply`: supply the same identity/revision/token and the returned
+  opaque `proposalId`. The saved server-side proposal expires after 30 minutes.
+- `POST .../edits/undo`: restore the preceding saved snapshot as a new revision.
+- `POST .../edits/silence`: analyze primary audio locally (−35 dB, at least 0.6 s,
+  retaining 120 ms source padding). Supports 40 clips / 10 source minutes, with a
+  45-second analysis budget. The response contains suggestions, not cuts.
+
+Proposing does not write project files. Applying rechecks the current revision and
+plan hash, preserves non-caption assets/project/output settings, writes a separate
+retimed SRT and immutable snapshots, and invalidates the previous preview. Competing
+views share a manifest-level edit lock; stale requests return HTTP 409. Render
+preflight is rechecked before reserving the render action. Rendered candidates stay
+immutable. Protections belong to a proposal and must be selected again after saving.
+
+Production layers follow retained spans. Crossfades become hard cuts at their
+midpoints, with a warning before saving. A caption crossing a cut is omitted rather
+than assigned invented word timings, and flagged for regeneration. Restoring a
+snapshot restores that snapshot's caption asset too. These edits do not connect
+the bridge to OpenCut's future native Editor API.
+
 For a real agent workflow, use an opaque review session instead of embedding an
 entire plan in the browser URL. The agent creates one isolated directory per
 candidate and a small `review-session.json` manifest:

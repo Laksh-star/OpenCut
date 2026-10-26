@@ -63,6 +63,8 @@ moon run desktop:dev   # see apps/desktop/README.md
 
 ## AI agent bridge
 
+See [shiplog.md](shiplog.md) for the fork's development history and validation record.
+
 This fork includes an early, local-first MCP companion at
 [`apps/agent-bridge`](apps/agent-bridge). It gives AI agents a safe edit-plan
 workflow and FFmpeg preview renderer while OpenCut's native Editor API, MCP
@@ -129,6 +131,47 @@ keyframed effects. Subtitle-provider execution, setup checks, and manual caption
 QA now exist in the local bridge, but automatic semantic cleanup, diarization,
 and provider reliability handling still depend on future workflow improvements
 and the chosen local Whisper install or configured API keys.
+
+### Transcript editing and revision commands
+
+Saved review sessions now have a **Transcript & revision commands** panel. Click a
+caption passage to seek to its source moment, select complete cues to keep or
+remove, and review a proposed edit before saving it as a new revision. Supported
+local commands are “shorten this to 45 seconds”, “keep this passage”, “remove this
+passage”, and “move this clip first”. No model or external upload is needed for
+these commands. Standalone filler cues and locally detected quiet audio intervals
+are suggestions for review; they are never removed automatically.
+
+The proposal shows timing, retained ranges, caption effects, and production-layer
+changes. It can preserve selected passages for that proposal. Captions, overlays,
+audio and titles follow the retained/reordered footage. Transitions become hard
+cuts at their midpoints, with an explicit warning. Cue timing is not word timing:
+cues bisected by a cut are omitted and flagged for regeneration. Restore previous
+revision creates another immutable revision, including its earlier caption asset.
+Every saved change invalidates the previous preview.
+
+### Reproducible local setup
+
+Install dependencies separately in each checkout; do not symlink `node_modules`
+between worktrees. The web dependency versions and Bun lockfile pin the tested
+environment. The bridge includes the repository-pinned Bun 1.3.11 executable:
+
+```sh
+cd apps/agent-bridge
+bun install --frozen-lockfile
+cd ../web
+../agent-bridge/node_modules/.bin/bun install --frozen-lockfile
+```
+
+The launchers prefer that checkout's pinned executable. Set `OPENCUT_BUN` only
+when an explicit runtime override is needed. `OPENCUT_AGENT_ROOT` identifies the
+media workspace, not the source-code checkout. FFmpeg and ffprobe CLI tools with
+the required production filters must remain on PATH; upstream's shared media
+libraries do not replace them.
+
+`apps/agent-bridge/bin/opencut-plan` validates, saves and compiles supplied plans;
+preview/final rendering stays in the visible review workflow. A wrapper outside
+this checkout can select it with `OPENCUT_REPO_ROOT`, independent of the media root.
 
 ## Contributing
 

@@ -30,6 +30,8 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { Button } from "#/components/ui/button.tsx"
+import { TranscriptEditor } from "#/components/transcript-editor.tsx"
+import { editorialSegments } from "../../../agent-bridge/src/editorial.ts"
 import { parseCaptionFile, type CaptionCue } from "#/lib/captions.ts"
 import {
   buildTimelineSegments,
@@ -210,6 +212,7 @@ function AgentReviewWorkspace() {
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [revisionNote, setRevisionNote] = useState("")
   const [reviewerNote, setReviewerNote] = useState("")
+  const [editorialBusy, setEditorialBusy] = useState(false)
   const planInputRef = useRef<HTMLInputElement>(null)
   const videoInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -269,7 +272,7 @@ function AgentReviewWorkspace() {
     .filter((candidate) => candidate.outputExists || candidate.status === "rendered")
     .map((candidate) => candidate.id) ?? []
   const latestBatchActive = latestBatch?.status === "queued" || latestBatch?.status === "rendering"
-  const interactionLocked = reviewState === "saving" || reviewState === "previewing" || reviewState === "rendering" || batchRendering || latestBatchActive || captionGenerationLoading || captionRevisionLoading
+  const interactionLocked = editorialBusy || reviewState === "saving" || reviewState === "previewing" || reviewState === "rendering" || batchRendering || latestBatchActive || captionGenerationLoading || captionRevisionLoading
   const canEditPlan = Boolean(
     reviewSession &&
     activeCandidate &&
@@ -463,7 +466,7 @@ function AgentReviewWorkspace() {
       const response = await fetch(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId ?? "")}/revise`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ candidateId: activeCandidate.id, plan, note: revisionNote || undefined }),
+        body: JSON.stringify({ candidateId: activeCandidate.id, expectedRevision: activeCandidate.revision, plan, note: revisionNote || undefined }),
       })
       const payload = (await response.json()) as ReviewSession & { error?: string }
       if (!response.ok) throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
@@ -614,14 +617,13 @@ function AgentReviewWorkspace() {
     setCaptionDraftCues([])
     setCaptionsEnabled(false)
     setCaptionsError(null)
-    if (!captionsPath) {
+    if (!captionsPath || (sessionId && !activeReviewCandidateId)) {
       setCaptionsLoading(false)
       return () => controller.abort()
     }
 
     setCaptionsLoading(true)
-    const sessionId = new URLSearchParams(window.location.search).get("session")
-    const captionsUrl = reviewSession && sessionId && activeReviewCandidateId
+    const captionsUrl = sessionId && activeReviewCandidateId
       ? `${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/candidates/${encodeURIComponent(activeReviewCandidateId)}/captions`
       : `${bridgeUrl}/v1/assets/text?path=${encodeURIComponent(captionsPath)}`
     void fetch(
@@ -648,7 +650,7 @@ function AgentReviewWorkspace() {
         if (!controller.signal.aborted) setCaptionsLoading(false)
       })
     return () => controller.abort()
-  }, [activeReviewCandidateId, captionsPath, reviewSession])
+  }, [activeReviewCandidateId, activeCandidate?.revision, captionsPath, sessionId])
 
   async function handlePlanFile(file: File | undefined) {
     if (!file) return
@@ -815,6 +817,22 @@ function AgentReviewWorkspace() {
       videoRef.current.pause()
       setIsPlaying(false)
     }
+  }
+
+  function seekToTranscriptTime(seconds: number) {
+    const segment = editorialSegments(plan).find((segment) => seconds >= segment.start && seconds < segment.end)
+    if (!segment) return
+    const sourceTime = segment.clip.sourceStart + (seconds - segment.start) * segment.clip.speed
+    setSelectedClipId(segment.clip.id)
+    setCurrentSourceTime(sourceTime)
+    const asset = plan.assets.find((asset) => asset.id === segment.clip.assetId)
+    const source = reviewSession?.sourceAssets.find((source) => source.id === asset?.id || source.path === asset?.path)
+    if (source && sessionId) {
+      setVideoUrl(`${bridgeUrl}/v1/review-sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(source.id)}`)
+      setVideoName(source.label)
+    }
+    if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = sourceTime }
+    setIsPlaying(false)
   }
 
   async function toggleSelectionPlayback() {
@@ -1265,6 +1283,28 @@ function AgentReviewWorkspace() {
         </section>
       ) : sessionError ? (
         <div className="border-b border-red-400/20 bg-red-400/10 px-4 py-3 text-xs text-red-200">{sessionError}</div>
+      ) : null}
+
+      {activeCandidate && reviewSession && sessionId ? (
+        <TranscriptEditor
+          key={`${activeCandidate.id}-${activeCandidate.revision}`}
+          bridgeUrl={bridgeUrl}
+          sessionId={sessionId}
+          candidateId={activeCandidate.id}
+          revision={activeCandidate.revision}
+          approvalToken={reviewSession.approvalToken}
+          plan={activeCandidate.plan}
+          cues={captionCues}
+          selectedClipId={selectedClipId}
+          disabled={!canEditPlan || planIsDirty || captionDraftDirty || captionsLoading}
+          onSeek={seekToTranscriptTime}
+          onBusyChange={setEditorialBusy}
+          onSaved={(session) => {
+            setReviewSession(session)
+            const candidate = session.candidates.find((candidate) => candidate.id === activeCandidate.id)
+            if (candidate) applyReviewCandidate(session, candidate)
+          }}
+        />
       ) : null}
 
       {planError ? (

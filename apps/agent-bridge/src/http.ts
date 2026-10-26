@@ -11,7 +11,9 @@ import { z } from "zod/v4";
 import { captionCuesSchema } from "./captions.ts";
 import { getWorkspaceRoot, resolveInputPath } from "./paths.ts";
 import { parseByteRange } from "./range.ts";
-import { createReviewEvent, ReviewSessionRegistry } from "./review-session.ts";
+import { createReviewEvent, ReviewSessionRegistry, StaleRevisionError } from "./review-session.ts";
+import { editorialOperationSchema, timeRangeSchema } from "./editorial.ts";
+import { detectCandidateSilence } from "./silence.ts";
 import { createReviewExportPackage } from "./export-package.ts";
 import { assertPreflightEligible, preflightReviewSession } from "./preflight.ts";
 import { approveAndRenderProject, capabilities, renderPlanValue } from "./service.ts";
@@ -40,7 +42,18 @@ const reviseCandidateSchema = z.object({
   candidateId: z.string().min(1),
   plan: editPlanSchema,
   note: z.string().trim().max(1_000).optional(),
+  expectedRevision: z.number().int().positive().optional(),
 });
+const editorialBaseSchema = z.object({
+  candidateId: z.string().min(1),
+  expectedRevision: z.number().int().positive(),
+  approvalToken: z.string().uuid(),
+});
+const editorialProposalSchema = editorialBaseSchema.extend({
+  operation: editorialOperationSchema,
+  protectedRanges: z.array(timeRangeSchema).max(500).default([]),
+});
+const editorialApplySchema = editorialBaseSchema.extend({ proposalId: z.string().uuid() });
 const reviewerNoteRequestSchema = z.object({
   candidateId: z.string().min(1),
   text: z.string().trim().min(1).max(2_000),
@@ -93,6 +106,20 @@ const exportPackageRequestSchema = z.object({
 
 let approvalInProgress = false;
 
+const beginAction = async (sessionId?: string, expected?: Awaited<ReturnType<ReviewSessionRegistry["load"]>>) => {
+  if (approvalInProgress || sessionId && registry.isEditing(sessionId)) throw new StaleRevisionError("Another edit or render is in progress. Wait and refresh.");
+  approvalInProgress = true;
+  try {
+    if (sessionId && expected) {
+      const current = await registry.load(sessionId);
+      if (current.selectedCandidateId !== expected.selectedCandidateId || current.candidates.some((candidate) => {
+        const before = expected.candidates.find((entry) => entry.id === candidate.id);
+        return !before || before.revision !== candidate.revision || JSON.stringify(before.plan) !== JSON.stringify(candidate.plan);
+      })) throw new StaleRevisionError("The candidate changed during preflight. Refresh before approving this action.");
+    }
+  } catch (error) { approvalInProgress = false; throw error; }
+};
+
 const applyCors = (request: IncomingMessage, response: ServerResponse) => {
   const origin = request.headers.origin;
   if (origin && allowedOrigins.has(origin)) {
@@ -129,7 +156,10 @@ const readJsonBody = async (request: IncomingMessage) => {
     if (size > maximumBodyBytes) throw new Error("Request body exceeds the 2 MB limit");
     chunks.push(buffer);
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  const sessionId = (request.url ?? "").match(/^\/v1\/review-sessions\/([^/]+)\//)?.[1];
+  if (sessionId && registry.isEditing(decodeURIComponent(sessionId))) throw new StaleRevisionError("A revision is being saved. Wait and refresh before another action.");
+  return body;
 };
 
 const mediaType = (path: string) => {
@@ -265,9 +295,45 @@ const server = createServer(async (request, response) => {
     const reviseRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/revise$/);
     if (request.method === "POST" && reviseRoute) {
       const input = reviseCandidateSchema.parse(await readJsonBody(request));
-      sendJson(request, response, 200, await registry.reviseCandidate(
-        reviseRoute[0]!, input.candidateId, input.plan, input.note,
-      ));
+      await beginAction(reviseRoute[0]!);
+      try {
+        sendJson(request, response, 200, await registry.reviseCandidate(
+          reviseRoute[0]!, input.candidateId, input.plan, input.note, { expectedRevision: input.expectedRevision },
+        ));
+      } finally { approvalInProgress = false; }
+      return;
+    }
+
+    const editorialRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/edits\/(propose|apply|undo|silence)$/);
+    if (request.method === "POST" && editorialRoute) {
+      const [sessionId, action] = editorialRoute as [string, string];
+      const body = await readJsonBody(request);
+      const input = editorialBaseSchema.parse(body);
+      if (registry.get(sessionId).approvalToken !== input.approvalToken) {
+        sendJson(request, response, 403, { error: "Invalid review action token" });
+        return;
+      }
+      if (approvalInProgress) throw new StaleRevisionError("A render is in progress. Wait before editing.");
+      if (action === "propose") {
+        const proposal = editorialProposalSchema.parse(body);
+        sendJson(request, response, 200, await registry.proposeEdit(sessionId, input.candidateId, input.expectedRevision, proposal.operation, proposal.protectedRanges));
+      } else if (action === "apply") {
+        const apply = editorialApplySchema.parse(body);
+        await beginAction(sessionId);
+        try { sendJson(request, response, 200, await registry.applyEdit(sessionId, input.candidateId, input.expectedRevision, apply.proposalId)); }
+        finally { approvalInProgress = false; }
+      } else if (action === "undo") {
+        await beginAction(sessionId);
+        try { sendJson(request, response, 200, await registry.undoEdit(sessionId, input.candidateId, input.expectedRevision)); }
+        finally { approvalInProgress = false; }
+      } else {
+        const loaded = await registry.load(sessionId);
+        const candidate = loaded.candidates.find((entry) => entry.id === input.candidateId);
+        if (!candidate) throw new Error("Unknown candidate");
+        if (candidate.revision !== input.expectedRevision) throw new StaleRevisionError("The candidate changed. Refresh before analyzing pauses.");
+        const result = await detectCandidateSilence(await getWorkspaceRoot(), candidate.plan);
+        sendJson(request, response, 200, { ...result, revision: candidate.revision });
+      }
       return;
     }
 
@@ -353,7 +419,7 @@ const server = createServer(async (request, response) => {
       if (!candidate) throw new Error("Unknown candidate");
       if (candidate.outputExists || candidate.status === "rendered") throw new Error("Rendered candidates are immutable");
       if (candidate.status === "queued" || candidate.status === "rendering") throw new Error("Queued or rendering candidates cannot generate captions");
-      approvalInProgress = true;
+      await beginAction(generateCaptionsRoute[0]!, loaded);
       try {
         const { result, session } = await registry.generateCaptions(generateCaptionsRoute[0]!, input.candidateId, {
           externalUploadApproved: input.externalUploadApproved,
@@ -392,7 +458,7 @@ const server = createServer(async (request, response) => {
       if (!candidate) throw new Error("Unknown candidate");
       if (candidate.outputExists || candidate.status === "rendered") throw new Error("Rendered candidates are immutable");
       if (candidate.status === "queued" || candidate.status === "rendering") throw new Error("Queued or rendering candidates cannot revise captions");
-      approvalInProgress = true;
+      await beginAction(reviseCaptionsRoute[0]!, loaded);
       try {
         const { captionsPath, cues, session } = await registry.reviseCaptions(
           reviseCaptionsRoute[0]!,
@@ -438,18 +504,18 @@ const server = createServer(async (request, response) => {
       const previewOutputPath = posix.join(
         posix.dirname(candidate.planPath), "renders", `preview-r${candidate.revision}.mp4`,
       );
-      approvalInProgress = true;
-      await registry.update(previewRoute[0]!, (session) => ({
-        ...session,
-        updatedAt: new Date().toISOString(),
-        candidates: session.candidates.map((entry) => entry.id === input.candidateId
-          ? { ...entry, status: "previewing", error: undefined }
-          : entry),
-        events: [...session.events, createReviewEvent("preview-requested", {
-          actor: "reviewer", candidateId: input.candidateId, revision: candidate.revision,
-        })],
-      }));
+      await beginAction(previewRoute[0]!, loaded);
       try {
+        await registry.update(previewRoute[0]!, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          candidates: session.candidates.map((entry) => entry.id === input.candidateId
+            ? { ...entry, status: "previewing", error: undefined }
+            : entry),
+          events: [...session.events, createReviewEvent("preview-requested", {
+            actor: "reviewer", candidateId: input.candidateId, revision: candidate.revision,
+          })],
+        }));
         const result = await renderPlanValue(
           candidate.plan, previewOutputPath, input.renderLimitSeconds, "preview",
         );
@@ -515,16 +581,16 @@ const server = createServer(async (request, response) => {
         mode: "final",
         renderLimitSeconds: input.renderLimitSeconds,
       }));
-      approvalInProgress = true;
-      await registry.update(approveRoute[0]!, (session) => ({
-        ...session,
-        updatedAt: new Date().toISOString(),
-        candidates: session.candidates.map((entry) => entry.id === input.candidateId ? { ...entry, status: "rendering", error: undefined } : entry),
-        events: [...session.events, createReviewEvent("final-approved", {
-          actor: "reviewer", candidateId: input.candidateId, revision: candidate.revision,
-        })],
-      }));
+      await beginAction(approveRoute[0]!, loaded);
       try {
+        await registry.update(approveRoute[0]!, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          candidates: session.candidates.map((entry) => entry.id === input.candidateId ? { ...entry, status: "rendering", error: undefined } : entry),
+          events: [...session.events, createReviewEvent("final-approved", {
+            actor: "reviewer", candidateId: input.candidateId, revision: candidate.revision,
+          })],
+        }));
         const provenance = await registry.provenance(approveRoute[0]!, input.candidateId);
         const latestNote = loaded.reviewerNotes.filter((note) => note.candidateId === input.candidateId).at(-1)?.text;
         const result = await approveAndRenderProject(candidate.plan, {
@@ -592,29 +658,29 @@ const server = createServer(async (request, response) => {
       const batchId = randomUUID();
       const requestedAt = new Date().toISOString();
       const results: Array<{ candidateId: string; status: "rendered" | "failed"; outputPath?: string; error?: string }> = [];
-      approvalInProgress = true;
-      await registry.update(approveBatchRoute[0]!, (session) => ({
-        ...session,
-        updatedAt: new Date().toISOString(),
-        candidates: session.candidates.map((entry) => candidates.some((candidate) => candidate.id === entry.id)
-          ? { ...entry, status: "queued", error: undefined }
-          : entry),
-        renderBatches: [...session.renderBatches, {
-          id: batchId,
-          status: "queued",
-          requestedAt,
-          items: candidates.map((candidate) => ({
-            candidateId: candidate.id,
-            revision: candidate.revision,
-            status: "queued",
-          })),
-        }],
-        events: [...session.events, createReviewEvent("batch-approved", {
-          actor: "reviewer",
-          detail: `${batchId}: ${candidates.length} candidates`,
-        })],
-      }));
+      await beginAction(approveBatchRoute[0]!, loaded);
       try {
+        await registry.update(approveBatchRoute[0]!, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          candidates: session.candidates.map((entry) => candidates.some((candidate) => candidate.id === entry.id)
+            ? { ...entry, status: "queued", error: undefined }
+            : entry),
+          renderBatches: [...session.renderBatches, {
+            id: batchId,
+            status: "queued",
+            requestedAt,
+            items: candidates.map((candidate) => ({
+              candidateId: candidate.id,
+              revision: candidate.revision,
+              status: "queued",
+            })),
+          }],
+          events: [...session.events, createReviewEvent("batch-approved", {
+            actor: "reviewer",
+            detail: `${batchId}: ${candidates.length} candidates`,
+          })],
+        }));
         for (const candidate of candidates) {
           await registry.update(approveBatchRoute[0]!, (session) => ({
             ...session,
@@ -746,7 +812,7 @@ const server = createServer(async (request, response) => {
         sendJson(request, response, 409, { error: "Another approval render is already in progress" });
         return;
       }
-      approvalInProgress = true;
+      await beginAction();
       try {
         const input = approvalRequestSchema.parse(await readJsonBody(request));
         sendJson(request, response, 200, await approveAndRenderProject(input.plan, { renderLimitSeconds: input.renderLimitSeconds, approvalSource: "web-review" }));
@@ -759,7 +825,7 @@ const server = createServer(async (request, response) => {
     sendJson(request, response, 404, { error: "Not found" });
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(-8_000);
-    const statusCode = error instanceof SyntaxError || error instanceof z.ZodError ? 400 : 500;
+    const statusCode = error instanceof StaleRevisionError ? 409 : error instanceof SyntaxError || error instanceof z.ZodError ? 400 : 500;
     sendJson(request, response, statusCode, { error: message });
   }
 });
