@@ -214,3 +214,22 @@ historical runtime validation is only reported where separately recorded.
   0.12.0 and the actual podcast main link reopens. Main/clip manifest hashes match
   the pre-restart values exactly (master r1/events 0; clip events 15 and original
   rendered selections). No podcast edit, render or external upload occurred.
+
+## 2026-10-27 — Script-to-cut feasibility and plan
+
+- Assessed assembling supplied scripts with images, narration/audio and video.
+  The current v2 renderer supplies most composition primitives, but project creation
+  requires a video and there is no script/storyboard-to-asset/timing workflow.
+- Identified a specific audio gap: music ducking currently keys off primary video
+  speech; separate narration needs inclusion in the speech bus.
+- Added the proposed [script-to-cut plan](plans/script-to-cut.md), covering
+  image-led composition, scene/asset mapping, supplied-narration timing, manual
+  corrections/locks, revision preservation, local processing and separate render
+  approvals. Linked it as proposed work in the documentation map.
+- Recommended controlled storyboard assembly first, then assisted matching and
+  alignment. Voice generation, stock search, generative assets and complex motion
+  graphics are deferred.
+- Verification: inspected owning schema, compiler, project/import, preflight and
+  UI media helpers; checked documentation links and whitespace. Planning only:
+  no application implementation, dependency changes, uploads or media renders;
+  application tests were not rerun. Version remains 0.12.0.

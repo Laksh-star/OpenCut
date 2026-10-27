@@ -15,6 +15,11 @@ separate from current operating instructions.
 | [Shiplog](shiplog.md) | Maintained record of implementation, validation and delivery |
 | [Desktop README](apps/desktop/README.md) | Separate upstream Rust desktop scaffold; not the browser studio launcher |
 
+## Proposed development
+
+- [Script-to-cut assembly plan](plans/script-to-cut.md): assessment, first-cut
+  workflow, implementation stages and acceptance checks. Proposed, not implemented.
+
 ## Evidence and milestones
 
 - [0.12.0 local fork milestone](changelog/0.12.0.md): render reliability, long
