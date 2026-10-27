@@ -179,3 +179,15 @@ test("the visible shorten control proposes a duration without saving or renderin
   expect(onSaved).not.toHaveBeenCalled()
   expect(getByRole(container, "button", { name: "Save changes" })).toBeTruthy()
 })
+
+test("a long master starts with a valid long-form target and submits it as a proposal only", async () => {
+  const plan = structuredClone(sampleEditPlan)
+  plan.timeline.clips = [{ ...plan.timeline.clips[0]!, sourceStart: 0, sourceEnd: 1200, speed: 1 }]
+  await act(async () => root.render(<TranscriptEditor subject="edit" bridgeUrl="http://localhost:3210" sessionId="session" candidateId="candidate" revision={1} approvalToken="token" plan={plan} cues={[]} selectedClipId={plan.timeline.clips[0]!.id} disabled={false} onSeek={onSeek} onSaved={onSaved} onBusyChange={() => {}} />))
+  // Changing identity remounts the editor in the app; use the same lifecycle here.
+  await act(async () => root.render(<TranscriptEditor key="long-master" subject="edit" bridgeUrl="http://localhost:3210" sessionId="session" candidateId="candidate" revision={1} approvalToken="token" plan={plan} cues={[]} selectedClipId={plan.timeline.clips[0]!.id} disabled={false} onSeek={onSeek} onSaved={onSaved} onBusyChange={() => {}} />))
+  expect((getByRole(container, "spinbutton", { name: "Target length (seconds)" }) as HTMLInputElement).value).toBe("1080")
+  await act(async () => fireEvent.click(getByRole(container, "button", { name: "Shorten edit" })))
+  expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0]![1]?.body)).operation).toEqual({ type: "shorten", seconds: 1080 })
+  expect(onSaved).not.toHaveBeenCalled()
+})

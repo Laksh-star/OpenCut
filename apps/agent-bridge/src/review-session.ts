@@ -1,3 +1,4 @@
+import { checkRenderCancellation } from "./render-context.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
@@ -33,6 +34,7 @@ export const reviewEventTypeSchema = z.enum([
   "preview-requested",
   "preview-rendered",
   "preview-failed",
+  "preview-cancelled",
   "captions-generation-requested",
   "captions-generated",
   "captions-generation-failed",
@@ -44,6 +46,7 @@ export const reviewEventTypeSchema = z.enum([
   "final-approved",
   "final-rendered",
   "final-failed",
+  "final-cancelled",
 ]);
 
 export const reviewEventSchema = z.object({
@@ -247,7 +250,7 @@ export const loadReviewSession = async (path: string): Promise<LoadedReviewSessi
 
 const hashPath = async (path: string) => {
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  for await (const chunk of createReadStream(path)) { checkRenderCancellation(); hash.update(chunk); }
   return hash.digest("hex");
 };
 
@@ -293,6 +296,7 @@ export class ReviewSessionRegistry {
     if (!candidate) throw new Error("Unknown candidate");
     if (candidate.revision !== expectedRevision) throw new StaleRevisionError("This candidate changed. Refresh before proposing another edit.");
     if (candidate.outputExists || ["queued", "rendering", "previewing", "rendered"].includes(candidate.status)) throw new Error("This candidate is locked. Select an unrendered candidate that is not busy.");
+    if (operation.type === "shorten" && operation.seconds > 300 && loaded.kind !== "full-project") throw new RangeError("Clip Shorten accepts targets up to 300 seconds. Use a main project for a longer edit.");
     const root = await getWorkspaceRoot();
     const captionAsset = candidate.plan.assets.find((asset) => asset.id === candidate.plan.timeline.captionsAssetId);
     let cues: CaptionCue[] = [];
@@ -300,7 +304,7 @@ export class ReviewSessionRegistry {
       const path = await resolveInputPath(root, captionAsset.path);
       if ((await stat(path)).size > 1_000_000) throw new Error("Caption file exceeds the 1 MB editing limit.");
       cues = parseCaptionFile(await readFile(path, "utf8"));
-      if (!cues.length || cues.length > 500) throw new Error("Transcript editing needs 1–500 valid caption cues. Check the caption file first.");
+      if (!cues.length || cues.length > (loaded.kind === "full-project" ? 10_000 : 500)) throw new Error(`Transcript editing needs 1–${loaded.kind === "full-project" ? 10_000 : 500} valid caption cues. Check the caption file first.`);
     }
     const proposal = proposeEditorialEdit(candidate.plan, operation, cues, protectedRanges);
     for (const [id, saved] of this.proposals) {

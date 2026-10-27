@@ -1,3 +1,5 @@
+import { RenderProgressPanel } from "./render-progress.tsx"
+import { renderJobActive, type RenderJob } from "#/lib/render-jobs.ts"
 import {
   ArrowRight,
   ArrowDown,
@@ -168,6 +170,12 @@ export function AgentReviewWorkspace({ project }: { project?: WorkspaceProject }
   const [hasImportedPlan, setHasImportedPlan] = useState(false)
   const [clientReady, setClientReady] = useState(false)
   const [stage, setStage] = useState<ReviewStage>(project ? "edit" : "choose")
+  const [renderJob, setRenderJob] = useState<RenderJob | null>(null)
+  const [activeJobId, setActiveJobId] = useState<string | null>(null)
+  const [cancellingJob, setCancellingJob] = useState(false)
+  const [jobPollError, setJobPollError] = useState<string | null>(null)
+  const jobStarting = useRef(false)
+  const handledJobs = useRef(new Set<string>())
   const [projectBusy, setProjectBusy] = useState(false)
   const [timelineProposal, setTimelineProposal] = useState<(EditorialProposal & { proposalId: string }) | null>(null)
   const [previewMode, setPreviewMode] = useState<"source" | "edited">("source")
@@ -404,10 +412,64 @@ export function AgentReviewWorkspace({ project }: { project?: WorkspaceProject }
     }
   }, [])
 
+  useEffect(() => {
+    if (!sessionId || !activeCandidate) return
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout>
+    const controller = new AbortController()
+    const busy = reviewState === "previewing" || reviewState === "rendering"
+    async function poll() {
+      try {
+        const response = await fetch(`${bridgeUrl}/v1/review-sessions/${sessionId}/render-jobs?candidateId=${encodeURIComponent(activeCandidate!.id)}`, { signal: controller.signal })
+        if (!response.ok) { if (response.status === 404 && !busy && !activeJobId) return; throw new Error("Could not read render progress. Check the local service; the job can continue in the background.") }
+        const { jobs } = await response.json() as { jobs: RenderJob[] }
+        if (stopped) return
+        const job = jobs.find((job) => job.revision === activeCandidate!.revision)
+        setJobPollError(null)
+        if (job) {
+          setRenderJob(job)
+          if (renderJobActive(job)) {
+            setReviewState(job.mode === "preview" ? "previewing" : "rendering")
+          } else if (!jobStarting.current && !handledJobs.current.has(job.id) && (activeJobId === job.id || busy)) {
+            handledJobs.current.add(job.id)
+            const latest = await fetch(`${bridgeUrl}/v1/review-sessions/${sessionId}`, { signal: controller.signal }).then(async (result) => { if (!result.ok) throw new Error("Refresh the project to load its saved render state"); return result.json() as Promise<ReviewSession> })
+            if (stopped) return
+            setReviewSession(latest)
+            const candidate = latest.candidates.find((candidate) => candidate.id === activeCandidate!.id)
+            if (candidate) applyReviewCandidate(latest, candidate)
+            if (job.status === "completed" && job.mode === "preview") setPreviewMode("edited")
+            setActiveJobId(null)
+            if (job.status !== "completed") setApprovalError(null)
+          }
+        }
+        if (!stopped && (job && renderJobActive(job) || jobStarting.current || !job && busy)) timer = setTimeout(() => void poll(), 800)
+      } catch (error) {
+        if (stopped) return
+        setJobPollError(error instanceof Error ? error.message : "Could not read progress")
+        if (busy || activeJobId) timer = setTimeout(() => void poll(), 2_000)
+      }
+    }
+    void poll()
+    return () => { stopped = true; controller.abort(); clearTimeout(timer) }
+  }, [sessionId, activeCandidate?.id, activeCandidate?.revision, reviewState, activeJobId])
+
+  async function cancelRenderJob() {
+    if (!renderJob || !reviewSession || cancellingJob) return
+    setCancellingJob(true); setJobPollError(null)
+    try {
+      const response = await fetch(`${bridgeUrl}/v1/review-sessions/${sessionId}/render-jobs/${renderJob.id}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approvalToken: reviewSession.approvalToken }) })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error ?? "Could not cancel this render")
+      setRenderJob(payload.job)
+    } catch (error) { setJobPollError(error instanceof Error ? error.message : "Could not cancel this render") }
+    finally { setCancellingJob(false) }
+  }
+
   function applyReviewCandidate(
     session: ReviewSession,
     candidate: ReviewCandidate,
   ) {
+    setRenderJob(null)
     setPreviewMode("source")
     setTimelineProposal(null)
     setActiveReviewCandidateId(candidate.id)
@@ -547,6 +609,8 @@ export function AgentReviewWorkspace({ project }: { project?: WorkspaceProject }
       interactionLocked
     )
       return
+    jobStarting.current = true
+    setRenderJob(null)
     setReviewState("previewing")
     setApprovalError(null)
     try {
@@ -559,13 +623,17 @@ export function AgentReviewWorkspace({ project }: { project?: WorkspaceProject }
             candidateId: activeCandidate.id,
             approvalToken: reviewSession.approvalToken,
             renderLimitSeconds: previewLimit,
+            background: true,
           }),
         },
       )
       const payload = (await response.json()) as ApprovalResult & {
         error?: string
         session?: ReviewSession
+        job?: RenderJob
       }
+      jobStarting.current = false
+      if (response.status === 202 && payload.job) { setActiveJobId(payload.job.id); setRenderJob(payload.job); return }
       if (!response.ok || !payload.session)
         throw new Error(
           payload.error ?? `Local bridge returned ${response.status}`,
@@ -577,6 +645,7 @@ export function AgentReviewWorkspace({ project }: { project?: WorkspaceProject }
       setPreviewMode("edited")
       setApprovalResult(payload)
     } catch (error) {
+      jobStarting.current = false;
       setReviewState("failed")
       setApprovalError(
         error instanceof Error ? error.message : "Could not render the preview",
@@ -983,6 +1052,8 @@ export function AgentReviewWorkspace({ project }: { project?: WorkspaceProject }
     if (reviewState === "rendering" || reviewState === "rendered" || batchRendering || latestBatchActive) return
 
     let bridgeResponded = false
+    jobStarting.current = Boolean(reviewSession)
+    setRenderJob(null)
     setReviewState("rendering")
     setApprovalError(null)
     setApprovalResult(null)
@@ -1001,11 +1072,13 @@ export function AgentReviewWorkspace({ project }: { project?: WorkspaceProject }
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(reviewSession
-          ? { candidateId: selectedCandidate?.id, approvalToken: reviewSession.approvalToken, renderLimitSeconds: renderLimit }
+          ? { candidateId: selectedCandidate?.id, approvalToken: reviewSession.approvalToken, renderLimitSeconds: renderLimit, background: true }
           : { plan, renderLimitSeconds: renderLimit }),
       })
       bridgeResponded = true
-      const payload = (await response.json()) as ApprovalResult & { error?: string; session?: ReviewSession }
+      const payload = (await response.json()) as ApprovalResult & { error?: string; session?: ReviewSession; job?: RenderJob }
+      jobStarting.current = false
+      if (response.status === 202 && payload.job) { setActiveJobId(payload.job.id); setRenderJob(payload.job); return }
       if (!response.ok) {
         throw new Error(payload.error ?? `Local bridge returned ${response.status}`)
       }
@@ -1014,6 +1087,7 @@ export function AgentReviewWorkspace({ project }: { project?: WorkspaceProject }
       setReviewState("rendered")
       if (payload.session) setReviewSession(payload.session)
     } catch (error) {
+      jobStarting.current = false
       setBridgeOnline(bridgeResponded)
       setApprovalError(
         error instanceof Error
@@ -1159,6 +1233,8 @@ export function AgentReviewWorkspace({ project }: { project?: WorkspaceProject }
           dirty={planIsDirty || captionDraftDirty}
         />
         </>)}
+        {renderJob && renderJob.revision === activeCandidate?.revision && (renderJobActive(renderJob) || stage === "review" || reviewState === "failed") ? <RenderProgressPanel job={renderJob} cancelling={cancellingJob} onCancel={() => void cancelRenderJob()} /> : null}
+        {jobPollError ? <p role="status" className="rounded-lg border border-amber-300/20 p-3 text-xs text-amber-100">{jobPollError}</p> : null}
         {sessionError || approvalError || planError ? (
           <p
             role="alert"
@@ -1295,7 +1371,7 @@ export function AgentReviewWorkspace({ project }: { project?: WorkspaceProject }
                 )}
               </div>
             ) : null}
-            {project && stage === "edit" ? <details className="rounded-xl border border-white/10 bg-[#111214]"><summary className="cursor-pointer p-4 text-sm font-medium">Media & production <span className="ml-2 font-normal text-zinc-500">Add video, watermark, music, captions or titles</span></summary><MainProjectTools project={project} plan={plan} disabled={!canEditPlan || captionDraftDirty || Boolean(timelineProposal)} canCreateClip={!interactionLocked && !planIsDirty && !captionDraftDirty && !timelineProposal && Boolean(activeCandidate)} onImport={importMainMedia} onApply={reviseProductionPlan} onCreateClip={createMainClip} /></details> : null}
+            {project && stage === "edit" ? <details className="rounded-xl border border-white/10 bg-[#111214]"><summary className="cursor-pointer p-4 text-sm font-medium">Media & production <span className="ml-2 font-normal text-zinc-500">Add video, watermark, music, captions or titles</span></summary><MainProjectTools project={project} plan={plan} disabled={!canEditPlan || captionDraftDirty || Boolean(timelineProposal)} canCreateClip={!interactionLocked && !planIsDirty && !captionDraftDirty && !timelineProposal && Boolean(activeCandidate)} onPickerBusyChange={setProjectBusy} onImport={importMainMedia} onApply={reviseProductionPlan} onCreateClip={createMainClip} /></details> : null}
             {project && timelineProposal ? <section aria-label="Proposed timeline edit" className="space-y-3 rounded-xl border border-amber-300/25 bg-amber-300/5 p-4"><h3 className="text-sm font-semibold">Review timeline changes · {timelineProposal.beforeSeconds.toFixed(1)}s → {timelineProposal.afterSeconds.toFixed(1)}s</h3><ul className="text-sm text-zinc-300">{timelineProposal.changes.map((change, index) => <li key={index}>{change}</li>)}</ul>{timelineProposal.warnings.map((warning, index) => <p key={index} className="text-xs text-amber-200">{warning}</p>)}<div className="flex gap-2"><Button disabled={interactionLocked || planIsDirty || captionDraftDirty} onClick={() => void saveTimelineProposal()}>Save timeline changes</Button><Button variant="outline" disabled={interactionLocked} onClick={() => setTimelineProposal(null)}>Cancel timeline changes</Button></div></section> : null}
             <div
               className={`grid items-start gap-5 ${stage === "edit" ? "lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,1fr)]" : "lg:grid-cols-[minmax(0,1.6fr)_minmax(300px,1fr)]"}`}

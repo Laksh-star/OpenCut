@@ -182,3 +182,35 @@ historical runtime validation is only reported where separately recorded.
   `git diff --check`. No application/media changes or renders; the 90-test and build
   results linked in the documents are the earlier recorded implementation checks,
   not newly rerun tests in this documentation-only pass.
+
+
+## 2026-10-27 — Long-project and render reliability
+
+- Fixed main Shorten targets above five minutes; main projects now accept up to
+  four hours with a valid 90% default. Kept clip targets bounded at 300 seconds.
+  Main transcript proposals now support up to 10,000 cues.
+- Added durable, manifest-scoped background jobs for single preview/final renders,
+  visible encoding progress/elapsed time, phase messages, friendly failure details,
+  and Cancel render before publication. Reopening reconnects to active work;
+  restarted/interrupted work needs an explicit retry. Revisions and separate
+  preview/final approvals remain intact; cancelled encodes remove partial output.
+- Added macOS Browse to project/media fields with manual path fallback, root
+  validation and one-dialog concurrency. Choosing only fills the path; Create/Add
+  is still explicit. No file copy or upload occurs. A real native popup opened
+  during testing; the user clicked it accidentally, and no unintended project was
+  created. Further OS popup testing was stopped; native selection automation remains
+  a verification limitation.
+- Validation: 75 bridge + 30 web tests, both typechecks/builds, new background-job
+  HTTP smoke and existing main/editorial/review smokes. Browser exercised live
+  render → reload → cancel, mobile status layout without overflow, controlled
+  Browse → Create, and generated 20-minute → 18-minute proposal/save. The test
+  harness's eager rejection assertion was corrected; cancellation itself passed.
+- Updated README, current feature matrix, main/clip guides, API reference,
+  documentation map and project report. Private bridge version is 0.12.0.
+- Batch progress/cancellation, native timeline dragging/waveforms/keyframes and
+  semantic caption repair remain outstanding. Dated evidence:
+  [reliability verification](verification/2026-10-27-reliability.md).
+- Runtime delivery: restarted the idle normal studio on 3320/5273; health reports
+  0.12.0 and the actual podcast main link reopens. Main/clip manifest hashes match
+  the pre-restart values exactly (master r1/events 0; clip events 15 and original
+  rendered selections). No podcast edit, render or external upload occurred.

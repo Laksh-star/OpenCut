@@ -17,7 +17,7 @@
 ## Current fork status
 
 This fork provides a working **local video workspace** alongside the upstream
-OpenCut rewrite foundations. Bridge version **0.11.0**, documented 26 October 2026:
+OpenCut rewrite foundations. Bridge version **0.12.0**, documented 27 October 2026:
 
 - **Projects home** creates and reopens full-video projects and saved clip reviews.
 - **Main editor** edits a complete video with a visible timeline, transcript,
@@ -26,6 +26,10 @@ OpenCut rewrite foundations. Bridge version **0.11.0**, documented 26 October 20
   create independent clip reviews without changing the master edit.
 - **Local exports** require separate preview and final actions, preserve saved
   revisions, and provide final playback, MP4 download and export packages.
+- **Render controls** show live encoding progress and elapsed time, reconnect after
+  reopening a project, and cancel preparation/encoding without changing saved edits.
+- **Local media** can be chosen with macOS **Browse…** or pasted paths. Main-project
+  **Shorten edit** supports targets up to four hours, with a valid default.
 
 The current renderer is an FFmpeg-backed adapter. The native upstream Editor API,
 Rust desktop editor and a native draggable timeline are separate work. See the
@@ -72,7 +76,7 @@ pinned Bun; `OPENCUT_BUN` supplies an explicit override.
 
 | Task | Where to start | Guide |
 | --- | --- | --- |
-| Edit a complete video | Projects home → enter project name and video path → Create project | [Main editor guide](apps/agent-bridge/MAIN_EDITOR_GUIDE.md) |
+| Edit a complete video | Projects home → name project and Browse/paste video path → Create project | [Main editor guide](apps/agent-bridge/MAIN_EDITOR_GUIDE.md) |
 | Resume a saved main edit | Main projects → Open project | [Reopen and recovery](apps/agent-bridge/MAIN_EDITOR_GUIDE.md#reopen-and-recovery) |
 | Make a short clip from a master | Media & production → Create a short clip from this edit | [Child clips](apps/agent-bridge/MAIN_EDITOR_GUIDE.md#create-clips-within-a-main-project) |
 | Review agent-prepared clips | Clip reviews → Open clip review, or launch its manifest | [Clip review guide](apps/agent-bridge/USER_GUIDE.md) |

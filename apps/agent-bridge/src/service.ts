@@ -1,3 +1,4 @@
+import { checkRenderCancellation, reportRenderProgress } from "./render-context.ts";
 import { randomUUID } from "node:crypto";
 import { access, writeFile, rename, link, rm } from "node:fs/promises";
 import { posix } from "node:path";
@@ -19,7 +20,7 @@ const MAX_RENDER_SECONDS = 14_400;
 
 export const capabilities = {
   server: "opencut-agent-bridge",
-  version: "0.11.0",
+  version: "0.12.0",
   adapter: "ffmpeg-production-graph",
   editorApiConnected: false,
   operations: [
@@ -45,6 +46,10 @@ export const capabilities = {
     maximumProjectRenderSeconds: MAX_RENDER_SECONDS,
     persistentProjectLibrary: true,
     mainProjectEditing: true,
+    mainShortenMaximumSeconds: 14_400,
+    sessionRenderJobs: true,
+    sessionRenderCancellation: true,
+    nativeMacFilePicker: true,
     videoOverlays: true,
     audioMixing: true,
     smartAudioDucking: true,
@@ -283,10 +288,21 @@ export const compilePlanFile = async (
 const executeCompiledPlan = async (compiled: ReturnType<typeof compileEditPlan>, renderedSeconds: number) => {
   const temporary = posix.join(posix.dirname(compiled.outputPath), `.${posix.basename(compiled.outputPath, ".mp4")}.render-${randomUUID()}.mp4`);
   try {
-    const args = [...compiled.args.slice(0, -1), temporary];
-    const result = await runProcess(compiled.command, args, { maxOutputBytes: 4_000_000 });
+    reportRenderProgress({ phase: "rendering", message: "Rendering video…", percent: 0, renderedSeconds: 0, totalSeconds: renderedSeconds });
+    let pending = "";
+    const args = ["-progress", "pipe:1", "-nostats", ...compiled.args.slice(0, -1), temporary];
+    const result = await runProcess(compiled.command, args, { maxOutputBytes: 4_000_000, onStdout: (chunk) => {
+      pending += chunk;
+      const lines = pending.split("\n"); pending = lines.pop() ?? "";
+      for (const line of lines) if (line.startsWith("out_time_us=")) {
+        const seconds = Number(line.slice(12)) / 1_000_000;
+        if (Number.isFinite(seconds)) reportRenderProgress({ phase: "rendering", message: "Rendering video…", renderedSeconds: Math.max(0, Math.min(renderedSeconds, seconds)), totalSeconds: renderedSeconds, percent: Math.max(0, Math.min(99, seconds / renderedSeconds * 100)) });
+      }
+    } });
     if (result.exitCode !== 0) throw new Error(`ffmpeg failed with exit code ${result.exitCode}: ${result.stderr.trim()}`);
     await access(temporary);
+    checkRenderCancellation();
+    reportRenderProgress({ phase: "publishing", message: "Finishing the video file…", percent: 99 });
     if (compiled.args.includes("-y")) await rename(temporary, compiled.outputPath);
     else await link(temporary, compiled.outputPath); // EEXIST preserves an earlier final.
     return { outputPath: compiled.outputPath, renderedSeconds, ffmpegExitCode: result.exitCode };
@@ -299,6 +315,7 @@ export const renderPlanValue = async (
   durationSeconds = 30,
   profile: RenderProfile = "preview",
 ) => {
+  reportRenderProgress({ phase: "preparing", message: "Preparing media and captions…", percent: null });
   const root = await getWorkspaceRoot();
   const { plan, durationSeconds: timelineDuration } = validatePlan(value);
   const assets = await resolvePlanAssets(root, plan);

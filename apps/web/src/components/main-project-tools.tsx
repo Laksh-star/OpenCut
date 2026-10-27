@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { LocalMediaPicker } from "./local-media-picker.tsx"
 import { Button } from "./ui/button.tsx"
 import {
   getTimelineDuration,
@@ -22,7 +23,9 @@ export function MainProjectTools({
   onImport,
   onApply,
   onCreateClip,
+  onPickerBusyChange,
 }: {
+  onPickerBusyChange?: (busy: boolean) => void
   project: WorkspaceProject
   plan: EditPlan
   disabled: boolean
@@ -35,6 +38,8 @@ export function MainProjectTools({
     end: number,
   ) => Promise<WorkspaceProject | null>
 }) {
+  const [picking, setPicking] = useState(false)
+  const [filePickerAvailable, setFilePickerAvailable] = useState(false)
   const [purpose, setPurpose] = useState<ImportPurpose>("video")
   const [path, setPath] = useState("")
   const [title, setTitle] = useState("")
@@ -47,16 +52,17 @@ export function MainProjectTools({
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     const controller = new AbortController()
-    projectRequest<{ projects: WorkspaceProject[] }>(
+    projectRequest<{ projects: WorkspaceProject[]; filePickerAvailable?: boolean }>(
       "",
       undefined,
       controller.signal,
     )
-      .then((result) =>
+      .then((result) => {
+        setFilePickerAvailable(Boolean(result.filePickerAvailable))
         setClips(
           result.projects.filter((item) => item.parentProjectId === project.id),
-        ),
-      )
+        )
+      })
       .catch(() => {})
     return () => controller.abort()
   }, [project.id])
@@ -105,21 +111,11 @@ export function MainProjectTools({
                 <option value="captions">Captions (SRT/VTT)</option>
               </select>
             </label>
-            <label className="min-w-40 flex-1 text-xs text-zinc-400">
-              Local file path
-              <input
-                className={field}
-                value={path}
-                required
-                disabled={disabled}
-                onChange={(event) => setPath(event.target.value)}
-                placeholder="/path/to/media"
-              />
-            </label>
+            <div className="min-w-40 flex-1"><LocalMediaPicker label="Local file path" value={path} onChange={setPath} purpose={purpose} available={filePickerAvailable} disabled={disabled} placeholder="/path/to/media" onBusyChange={(busy) => { setPicking(busy); onPickerBusyChange?.(busy) }} /></div>
             <Button
               type="submit"
               className="min-h-10"
-              disabled={disabled || !path.trim()}
+              disabled={disabled || picking || !path.trim()}
             >
               Add media
             </Button>

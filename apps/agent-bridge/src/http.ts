@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { RenderJobStore } from "./render-jobs.ts";
+import { RenderCancelledError, renderErrorMessage } from "./render-context.ts";
+import { chooseLocalMedia, nativeFilePickerAvailable, FilePickerError } from "./file-picker.ts";
 
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -19,7 +22,7 @@ import { createReviewExportPackage } from "./export-package.ts";
 import { assertPreflightEligible, preflightReviewSession } from "./preflight.ts";
 import { approveAndRenderProject, capabilities, renderPlanValue } from "./service.ts";
 import { createWorkspaceProject, createWorkspaceClip, duplicateWorkspaceProject, inspectProjectMedia, listWorkspaceProjects, readWorkspaceProject, rememberReviewProject } from "./workspace-projects.ts";
-import { editPlanSchema } from "./schema.ts";
+import { editPlanSchema, getPlanDuration } from "./schema.ts";
 import { createReviewSystemCheck } from "./system-check.ts";
 
 const host = "127.0.0.1";
@@ -27,6 +30,7 @@ const port = Number(process.env.OPENCUT_AGENT_HTTP_PORT ?? 3210);
 const maximumBodyBytes = 2_000_000;
 const maximumTextAssetBytes = 1_000_000;
 const registry = new ReviewSessionRegistry();
+const renderJobs = new RenderJobStore();
 const allowedOrigins = new Set(
   (process.env.OPENCUT_WEB_ORIGINS ??
     "http://localhost:5173,http://127.0.0.1:5173")
@@ -61,6 +65,7 @@ const reviewerNoteRequestSchema = z.object({
   text: z.string().trim().min(1).max(2_000),
 });
 const previewSessionCandidateSchema = z.object({
+  background: z.boolean().default(false),
   candidateId: z.string().min(1),
   approvalToken: z.string().uuid(),
   renderLimitSeconds: z.number().min(0.1).max(14_400).default(60),
@@ -77,6 +82,7 @@ const reviseCaptionsSchema = z.object({
   note: z.string().trim().max(1_000).optional(),
 });
 const approveSessionCandidateSchema = z.object({
+  background: z.boolean().default(false),
   candidateId: z.string().min(1),
   approvalToken: z.string().uuid(),
   renderLimitSeconds: z.number().min(0.1).max(14_400).default(300),
@@ -121,6 +127,16 @@ const beginAction = async (sessionId?: string, expected?: Awaited<ReturnType<Rev
     }
   } catch (error) { approvalInProgress = false; throw error; }
 };
+
+async function trackedRender(request: IncomingMessage, response: ServerResponse, input: Parameters<RenderJobStore["create"]>[0], background: boolean, action: () => Promise<unknown>) {
+  let job;
+  try { job = await renderJobs.create(input); } catch (error) { approvalInProgress = false; throw error; }
+  const task = renderJobs.run(job.id, action);
+  if (background) {
+    void task.catch(() => undefined); // Failure is retained in the job/session, not thrown after the 202 response.
+    sendJson(request, response, 202, { job });
+  } else sendJson(request, response, 200, await task);
+}
 
 const applyCors = (request: IncomingMessage, response: ServerResponse) => {
   const origin = request.headers.origin;
@@ -255,8 +271,30 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "POST" && requestUrl.pathname === "/v1/workspace-projects/pick-media") {
+      const input = z.object({ purpose: z.enum(["video", "watermark", "music", "captions"]).default("video") }).parse(await readJsonBody(request));
+      sendJson(request, response, 200, await chooseLocalMedia(input.purpose));
+      return;
+    }
+    const jobsRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/render-jobs$/);
+    if (request.method === "GET" && jobsRoute) {
+      const registered = registry.get(jobsRoute[0]!);
+      const jobs = await renderJobs.list(registered.manifestPath, requestUrl.searchParams.get("candidateId") ?? undefined);
+      sendJson(request, response, 200, { jobs: jobs.map(({ manifestPath: _path, ...job }) => job) });
+      return;
+    }
+    const cancelJobRoute = match(requestUrl.pathname, /^\/v1\/review-sessions\/([^/]+)\/render-jobs\/([^/]+)\/cancel$/);
+    if (request.method === "POST" && cancelJobRoute) {
+      const input = z.object({ approvalToken: z.string().uuid() }).parse(await readJsonBody(request));
+      const registered = registry.get(cancelJobRoute[0]!);
+      if (registered.approvalToken !== input.approvalToken) { sendJson(request, response, 403, { error: "Invalid review action token" }); return; }
+      try { sendJson(request, response, 200, { job: await renderJobs.cancel(cancelJobRoute[1]!, registered.manifestPath) }); }
+      catch (error) { sendJson(request, response, 409, { error: error instanceof Error ? error.message : "Could not cancel this render" }); }
+      return;
+    }
+
     if (requestUrl.pathname === "/v1/workspace-projects") {
-      if (request.method === "GET") { sendJson(request, response, 200, { projects: await listWorkspaceProjects(), mediaRoot: await getWorkspaceRoot() }); return; }
+      if (request.method === "GET") { sendJson(request, response, 200, { projects: await listWorkspaceProjects(), mediaRoot: await getWorkspaceRoot(), filePickerAvailable: nativeFilePickerAvailable() }); return; }
       if (request.method === "POST") { sendJson(request, response, 201, await createWorkspaceProject(await readJsonBody(request))); return; }
     }
     const projectRoute = match(requestUrl.pathname, /^\/v1\/workspace-projects\/([^/]+)\/(open|duplicate|media|clips)$/);
@@ -549,6 +587,7 @@ const server = createServer(async (request, response) => {
         posix.dirname(candidate.planPath), "renders", `preview-r${candidate.revision}.mp4`,
       );
       await beginAction(previewRoute[0]!, loaded);
+      await trackedRender(request, response, { manifestPath: registered.manifestPath, candidateId: candidate.id, revision: candidate.revision, mode: "preview", totalSeconds: Math.min(getPlanDuration(candidate.plan), input.renderLimitSeconds) }, input.background, async () => {
       try {
         await registry.update(previewRoute[0]!, (session) => ({
           ...session,
@@ -578,16 +617,16 @@ const server = createServer(async (request, response) => {
             detail: previewOutputPath,
           })],
         }));
-        sendJson(request, response, 200, { ...result, mode: "preview", session: updated });
+        return { ...result, mode: "preview", session: updated };
       } catch (error) {
-        const message = (error instanceof Error ? error.message : String(error)).slice(-8_000);
+        const message = renderErrorMessage(error);
         await registry.update(previewRoute[0]!, (session) => ({
           ...session,
           updatedAt: new Date().toISOString(),
           candidates: session.candidates.map((entry) => entry.id === input.candidateId
             ? { ...entry, status: "failed", error: message }
             : entry),
-          events: [...session.events, createReviewEvent("preview-failed", {
+          events: [...session.events, createReviewEvent(error instanceof RenderCancelledError ? "preview-cancelled" : "preview-failed", {
             actor: "system", candidateId: input.candidateId, revision: candidate.revision, detail: message,
           })],
         }));
@@ -595,6 +634,7 @@ const server = createServer(async (request, response) => {
       } finally {
         approvalInProgress = false;
       }
+      });
       return;
     }
 
@@ -627,6 +667,7 @@ const server = createServer(async (request, response) => {
         renderLimitSeconds: input.renderLimitSeconds,
       }));
       await beginAction(approveRoute[0]!, loaded);
+      await trackedRender(request, response, { manifestPath: registered.manifestPath, candidateId: candidate.id, revision: candidate.revision, mode: "final", totalSeconds: Math.min(getPlanDuration(candidate.plan), input.renderLimitSeconds) }, input.background, async () => {
       try {
         await registry.update(approveRoute[0]!, (session) => ({
           ...session,
@@ -653,14 +694,14 @@ const server = createServer(async (request, response) => {
             detail: candidate.plan.output.path,
           })],
         }));
-        sendJson(request, response, 200, { ...result, session: updated });
+        return { ...result, session: updated };
       } catch (error) {
-        const message = (error instanceof Error ? error.message : String(error)).slice(-8_000);
+        const message = renderErrorMessage(error);
         await registry.update(approveRoute[0]!, (session) => ({
           ...session,
           updatedAt: new Date().toISOString(),
           candidates: session.candidates.map((entry) => entry.id === input.candidateId ? { ...entry, status: "failed", error: message } : entry),
-          events: [...session.events, createReviewEvent("final-failed", {
+          events: [...session.events, createReviewEvent(error instanceof RenderCancelledError ? "final-cancelled" : "final-failed", {
             actor: "system", candidateId: input.candidateId, revision: candidate.revision, detail: message,
           })],
         }));
@@ -668,6 +709,7 @@ const server = createServer(async (request, response) => {
       } finally {
         approvalInProgress = false;
       }
+      });
       return;
     }
 
@@ -870,7 +912,7 @@ const server = createServer(async (request, response) => {
     sendJson(request, response, 404, { error: "Not found" });
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(-8_000);
-    const statusCode = error instanceof StaleRevisionError ? 409 : error instanceof SyntaxError || error instanceof z.ZodError ? 400 : 500;
+    const statusCode = error instanceof FilePickerError ? error.status : error instanceof StaleRevisionError || error instanceof RenderCancelledError ? 409 : error instanceof RangeError ? 400 : error instanceof SyntaxError || error instanceof z.ZodError ? 400 : 500;
     sendJson(request, response, statusCode, { error: message });
   }
 });

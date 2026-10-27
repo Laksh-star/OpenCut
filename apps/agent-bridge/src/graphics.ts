@@ -1,3 +1,4 @@
+import { checkRenderCancellation, reportRenderProgress } from "./render-context.ts";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile, access, rename } from "node:fs/promises";
 import { join } from "node:path";
@@ -184,6 +185,7 @@ export const preparePlanGraphics = async (
   await mkdir(directory, { recursive: true });
   const graphics: PreparedGraphic[] = [];
 
+  checkRenderCancellation();
   for (const [index, card] of plan.timeline.titleCards.entries()) {
     const path = join(directory, `title-${index + 1}-${card.id}.png`);
     await renderSvg(titleCardSvg(plan, card), path);
@@ -197,6 +199,7 @@ export const preparePlanGraphics = async (
       throw new Error(`Burn-in captions support at most ${MAX_BURNED_CAPTION_CUES} cues per render`);
     }
     for (const [index, cue] of cues.entries()) {
+      reportRenderProgress({ phase: "preparing", message: `Preparing captions (${index + 1}/${cues.length})…`, percent: null });
       const path = join(directory, `caption-${String(index + 1).padStart(4, "0")}.png`);
       await renderSvg(captionSvg(plan, cue), path);
       graphics.push({ id: `caption-${index + 1}`, kind: "caption", path, timelineStart: cue.start, duration: cue.end - cue.start });

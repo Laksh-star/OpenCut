@@ -11,7 +11,7 @@ export type TimeRange = z.infer<typeof timeRangeSchema>;
 export const editorialOperationSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("keep"), ranges: z.array(timeRangeSchema).min(1).max(500) }),
   z.object({ type: z.literal("remove"), ranges: z.array(timeRangeSchema).min(1).max(500) }),
-  z.object({ type: z.literal("shorten"), seconds: z.number().finite().min(0.1).max(300) }),
+  z.object({ type: z.literal("shorten"), seconds: z.number().finite().min(0.1).max(14_400) }),
   z.object({ type: z.literal("move-first"), clipId: z.string().min(1).max(80) }),
 ]);
 export type EditorialOperation = z.infer<typeof editorialOperationSchema>;

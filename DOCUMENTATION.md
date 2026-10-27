@@ -1,7 +1,7 @@
 # Documentation map
 
-Current behavior is documented for the local fork's bridge **0.11.0** as of
-26 October 2026. Start with the guide for your task; dated evidence/history is
+Current behavior is documented for the local fork's bridge **0.12.0** as of
+27 October 2026. Start with the guide for your task; dated evidence/history is
 separate from current operating instructions.
 
 | Document | Purpose |
@@ -17,6 +17,12 @@ separate from current operating instructions.
 
 ## Evidence and milestones
 
+- [0.12.0 local fork milestone](changelog/0.12.0.md): render reliability, long
+  Shorten targets and local media selection.
+
+- [Reliability and local picking verification](verification/2026-10-27-reliability.md):
+  long-master shortening, background jobs, progress/cancellation, recovery and picker checks.
+
 - [0.11.0 local fork milestone](changelog/0.11.0.md): delivered main-editor and
   review-workspace changes; this is not a public upstream release announcement.
 - [Main editor verification](verification/2026-10-26-main-editor.md): 66 bridge and
@@ -27,8 +33,8 @@ separate from current operating instructions.
   integration, revision/provenance tests and preservation of previous work.
 
 Earlier changelog entries and the July report are historical records. Their UI
-labels, test totals and limits are not current instructions. The documentation-only
-pass does not imply those application checks were rerun.
+labels, test totals and limits are not current instructions. Each dated verification
+record states the checks actually performed in that pass.
 
 ## Keeping this accurate
 

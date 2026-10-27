@@ -40,7 +40,8 @@ export function TranscriptEditor(props: Props) {
   const [protectedCues, setProtectedCues] = useState<number[]>([])
   const [targetSeconds, setTargetSeconds] = useState(() => {
     const initialDuration = editorialSegments(props.plan).at(-1)?.end ?? 0
-    return String(props.subject === "edit" ? Math.max(1, Math.floor(initialDuration * 0.9)) : Math.max(1, Math.min(45, Math.floor(initialDuration * 0.8))))
+    const target = props.subject === "edit" ? Math.min(14_400, initialDuration * 0.9) : Math.min(45, initialDuration * 0.8)
+    return String(Math.max(0.1, Math.floor(target * 10) / 10))
   })
   const [command, setCommand] = useState("")
   const [proposal, setProposal] = useState<Proposal | null>(null)
@@ -255,8 +256,9 @@ export function TranscriptEditor(props: Props) {
               <input
                 aria-label="Target length (seconds)"
                 type="number"
-                min={1}
-                step={1}
+                min={0.1}
+                step={0.1}
+                max={Math.min(props.subject === "edit" ? 14_400 : 300, duration)}
                 required
                 value={targetSeconds}
                 disabled={locked}
@@ -272,7 +274,7 @@ export function TranscriptEditor(props: Props) {
               className={buttonClass}
               disabled={
                 locked ||
-                Number(targetSeconds) <= 0 ||
+                Number(targetSeconds) < 0.1 || Number(targetSeconds) > (props.subject === "edit" ? 14_400 : 300) ||
                 Number(targetSeconds) >= duration
               }
             >

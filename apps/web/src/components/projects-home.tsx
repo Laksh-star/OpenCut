@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { Film, FolderOpen, Plus } from "lucide-react"
+import { LocalMediaPicker } from "./local-media-picker.tsx"
 import { Button } from "./ui/button.tsx"
 import {
   projectRequest,
@@ -12,6 +13,8 @@ export function ProjectsHome() {
   const [loading, setLoading] = useState(true)
   const [name, setName] = useState("")
   const [sourcePath, setSourcePath] = useState("")
+  const [picking, setPicking] = useState(false)
+  const [filePickerAvailable, setFilePickerAvailable] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState<"full-project" | "clip-review">(
@@ -19,7 +22,7 @@ export function ProjectsHome() {
   )
   useEffect(() => {
     const controller = new AbortController()
-    projectRequest<{ projects: WorkspaceProject[]; mediaRoot: string }>(
+    projectRequest<{ projects: WorkspaceProject[]; mediaRoot: string; filePickerAvailable?: boolean }>(
       "",
       undefined,
       controller.signal,
@@ -27,6 +30,7 @@ export function ProjectsHome() {
       .then((result) => {
         setProjects(result.projects)
         setMediaRoot(result.mediaRoot)
+        setFilePickerAvailable(Boolean(result.filePickerAvailable))
       })
       .catch((error) => {
         if (!controller.signal.aborted) setError(error.message)
@@ -100,21 +104,11 @@ export function ProjectsHome() {
                 className="mt-2 block min-h-11 w-full rounded-lg border border-white/15 bg-black/30 px-3 text-sm text-white"
               />
             </label>
-            <label className="text-xs text-zinc-400">
-              Video file path
-              <input
-                required
-                value={sourcePath}
-                disabled={busy}
-                onChange={(event) => setSourcePath(event.target.value)}
-                placeholder={`${mediaRoot || "/your/media/folder"}/video.mp4`}
-                className="mt-2 block min-h-11 w-full rounded-lg border border-white/15 bg-black/30 px-3 text-sm text-white"
-              />
-            </label>
+            <LocalMediaPicker label="Video file path" value={sourcePath} onChange={setSourcePath} purpose="video" available={filePickerAvailable} disabled={busy} onBusyChange={setPicking} placeholder={`${mediaRoot || "/your/media/folder"}/video.mp4`} />
             <Button
               type="submit"
               className="min-h-11 bg-amber-300 text-black hover:bg-amber-200"
-              disabled={busy || loading}
+              disabled={busy || picking || loading}
             >
               {busy ? "Opening video…" : "Create project"}
             </Button>

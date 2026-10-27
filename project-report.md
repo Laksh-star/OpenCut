@@ -1,8 +1,8 @@
 # OpenCut fork project report
 
-## Current state — 26 October 2026
+## Current state — 27 October 2026
 
-Bridge **0.11.0** delivers a local browser workspace for full-video editing and
+Bridge **0.12.0** delivers a local browser workspace for full-video editing and
 independent short-clip review. The current working branch is
 `codex/agent-bridge-mvp`. Implementation `03438ffe` added the main workspace;
 `a44b6b2c` simplified clip review; `5c8d8178` delivered reviewed transcript edits.
@@ -20,7 +20,7 @@ claim that its native Editor API is complete.
 | Editing engine | Local keep/remove/shorten/reorder proposals, whole-cue timing, protection, pause suggestions and restore; separate save |
 | Captions | Local/provided or explicitly approved API transcription, readiness checks, manual correction, revisioned SRTs, long-caption rendering |
 | Main/clip relationship | Saved main ranges produce isolated children with retimed captions/layers; parent stays unchanged |
-| Preview/final | Exact saved-version gate, separate explicit approvals; full main timelines up to four hours; oversized finals blocked |
+| Preview/final | Single-job progress, elapsed time, cancellation and reconnect; exact saved-version gate, separate explicit approvals; full main timelines up to four hours; oversized finals blocked |
 | Output/recovery | Atomic successful MP4 publication, final stream/download/package, immutable finals, editable main copies, restart/retry handling |
 | Agent integration | Existing 14 MCP tools plus HTTP project/editorial routes; FFmpeg adapter remains separate from native upstream APIs |
 
@@ -67,9 +67,13 @@ for that master. Existing clip selection, 15 audit events, revision-1 plans and 
 final outputs were preserved. Check the app for subsequent user-approved work.
 No external transcription provider or native desktop editor was exercised.
 
-These are recorded implementation results. This documentation pass does not
-claim to rerun those application checks. Exact evidence and remaining limits:
+The 27 October reliability pass additionally passed 75 bridge and 30 web tests,
+both typechecks/builds, the main/editorial/review smokes, and the new background
+job smoke. Browser checks exercised render/reload/cancel and a 20-minute master
+shortened to 18 minutes. The earlier results above remain dated checkpoints.
+Exact evidence and remaining limits:
 
+- [Reliability verification](verification/2026-10-27-reliability.md)
 - [Main editor verification](verification/2026-10-26-main-editor.md)
 - [Review UI verification](verification/2026-10-26-review-ux.md)
 - [Transcript/upstream integration verification](verification/2026-10-26.md)
@@ -77,8 +81,8 @@ claim to rerun those application checks. Exact evidence and remaining limits:
 
 ### Remaining work and operating instructions
 
-Native NLE timeline dragging, waveforms, keyframes, native file selection,
-detailed render percentages, automatic semantic caption repair, highlight ranking,
+Native NLE timeline dragging, waveforms, keyframes, detailed batch progress and
+cancellation, automatic semantic caption repair, highlight ranking,
 reframing, dubbing, generative media and publishing are not implemented. Creating
 and removing production layers in the main editor is now delivered; the older
 roadmap's combined “track creation/deletion and keyframes” item is therefore only
@@ -96,7 +100,7 @@ Use the [documentation map](DOCUMENTATION.md), [current feature/limit reference]
 The material below preserves the earlier baseline, original verification results,
 and proposed next steps. References to “current,” “latest,” five-minute caps,
 six-step UI labels, old test totals and earlier provider limitations describe that
-historical snapshot, not the current 0.11.0 workspace. Some roadmap items have
+historical snapshot, not the current 0.12.0 workspace. Some roadmap items have
 since shipped; use the current sections above to assess remaining work.
 
 **Status date:** 22 July 2026

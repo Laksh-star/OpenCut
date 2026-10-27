@@ -1,6 +1,6 @@
 # Clip review user guide
 
-Bridge 0.11.0 · current behavior, 26 October 2026.
+Bridge 0.12.0 · current behavior, 27 October 2026.
 
 Use this workflow to compare and finish short clips prepared by an agent or
 created from a saved main edit. For a complete video, start with the
@@ -148,3 +148,13 @@ approved clip as the scratch edit.
 [Features and operating limits](../../FEATURES.md) lists pause-analysis, caption,
 batch and other bounds. Native timeline gestures, keyframes, automatic highlight
 ranking/reframing/dubbing and publishing are not implemented here.
+
+## Render progress and cancellation
+
+Single preview/final actions show preparation or encoding, elapsed time and an
+encoding percentage. **Cancel render** stops preparation/encoding and discards
+partial output while preserving the saved edit. Cancellation is disabled during
+publication. Reopening the saved project reconnects to an active job. After a
+service restart, interrupted/failed jobs need an explicit retry. Preview and final
+approval remain separate. Batch approval retains its existing per-item queue;
+it does not yet have these progress/cancel controls.

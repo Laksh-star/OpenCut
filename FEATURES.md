@@ -1,6 +1,6 @@
 # Features and operating limits
 
-Current local fork: bridge **0.11.0**, 26 October 2026. This describes implemented
+Current local fork: bridge **0.12.0**, 27 October 2026. This describes implemented
 behavior. Historical reports and verification logs retain their original dates.
 
 ## Workspace capabilities
@@ -56,14 +56,15 @@ production layer keeps the referenced file on disk.
 | Clip review UI final/batch | Requests up to 300 s; a final exceeding the requested limit is blocked |
 | MCP `opencut_render_preview` | Defaults to 30 s, accepts up to 300 s; direct bounded renderer, separate from session approval |
 | MCP final/preflight | Render-limit input up to 300 s; use the main-editor HTTP workflow for long projects |
-| Shorten command target | 0.1–300 s on both workspaces; a long master's prefilled value can exceed that bound and must be changed; use range trim to retain a longer edit |
+| Shorten command target | Main: 0.1–14,400 s; clips: 0.1–300 s; target must be shorter than the current edit; main prefill stays within its bound |
 | Child clip range | Up to 120 timeline seconds, within the saved parent edit |
-| Caption cues | Up to 10,000; text endpoints/imports also have a 1,000,000-byte file limit and HTTP bodies a 2,000,000-byte limit |
+| Caption cues | Caption correction/import/providers: up to 10,000; transcript proposals: main 10,000, clips 500; text endpoints/imports also have a 1,000,000-byte file limit and HTTP bodies a 2,000,000-byte limit |
 | Caption graphics | Above 40 cues, one cached transparent movie replaces many simultaneous image inputs; long-track cues must not overlap |
 | Pause analysis | At most 40 primary cuts and 600 source seconds, with a 45 s analysis budget |
 | Editorial proposal | Expires after 30 minutes; requires the same saved revision/plan; up to 500 range entries per request |
 | Batch | Up to 20 distinct candidates; sequential rendering with per-item status |
-| Rendering | One approval/render action at a time per bridge process; successful outputs publish atomically |
+| Rendering | One approval/render action at a time; single session previews/finals show encoding progress, elapsed time and cancellation before publication; outputs publish atomically |
+| Local file chooser | macOS Browse for source video and media; restricted to the media root; path-entry fallback; no copy/upload |
 | Local access | Loopback HTTP and files inside `OPENCUT_AGENT_ROOT`; keep all referenced assets available |
 
 The raw HTTP batch schema accepts render-limit values up to 14,400 s; that does
@@ -92,7 +93,7 @@ implemented.
 ## Remaining work
 
 The upstream native Editor API/Rust editor integration, draggable NLE timeline,
-waveforms, keyframes, native file picker and detailed long-render progress are not
+waveforms, keyframes and detailed batch-render progress/cancellation are not
 implemented here. Neither are automatic semantic caption repair, diarization,
 automatic highlight ranking, reframing, dubbing or generative media. These are
 remaining capabilities, not claims about the current implementation.

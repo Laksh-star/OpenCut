@@ -1,6 +1,6 @@
 # Main video editor guide
 
-Bridge 0.11.0 · current behavior, 26 October 2026.
+Bridge 0.12.0 · current behavior, 27 October 2026.
 
 Use this workflow for a complete video. For agent-prepared short clips, use the
 [clip review guide](USER_GUIDE.md). [Features and limits](../../FEATURES.md) covers
@@ -27,7 +27,9 @@ ports; [README setup](../../README.md#start-the-workspace) includes the configur
 ## Create a project
 
 1. In **Your projects**, enter **Project name** and **Video file path**.
-2. Paste the absolute path of a local video inside the configured media folder.
+2. Use **Browse…** on macOS to choose a video, or paste its absolute path. The file
+   must be inside the configured media folder. Choosing it only fills the field;
+   it does not upload, copy or import it until you continue.
 3. Press **Create project**. The editor starts with the complete source on one
    main timeline; video creation does not automatically transcribe or render.
 4. Return through **← Projects** and use **Main projects → Open project** to resume.
@@ -60,11 +62,10 @@ tools contains local text commands, filler suggestions, passage protection,
 to ten source minutes/40 cuts; it is not a whole-recording analysis for a longer
 master. Nothing is removed automatically.
 
-The **Shorten edit** command currently accepts a target of at most **300 seconds**,
-even for a long master. Its prefilled value can exceed that limit; change it before
-using the command. To retain a longer edit, use **Trim to a timeline range** or
-select complete transcript passages to keep. This command limit does not cap the
-main project's full-length preview/final export.
+**Shorten edit** accepts main-project targets up to **14,400 seconds** (four hours),
+shorter than the current edit. The default is 90% of its saved duration, within
+that bound. For example, a 20-minute master starts at 1,080 seconds (18 minutes).
+Review the proposed cuts before saving; no render starts from Shorten.
 
 Editorial proposals retime captions, overlays, audio and titles with the retained
 speech. Existing crossfades are flattened with a warning. Cuts through part of a
@@ -78,7 +79,8 @@ it does not delete later history or overwrite an original media file.
 
 ## Media and production
 
-Expand **Media & production**. Choose **Add**, enter **Local file path**, then
+Expand **Media & production**. Choose **Add**, use **Browse…** on macOS or enter
+**Local file path**, then
 press **Add media**. Save the resulting changes.
 
 | Add choice | Result |
@@ -133,8 +135,14 @@ version. Successful outputs publish atomically; failed jobs do not publish parti
 finals. Completed masters are read-only. **Make an editable copy** creates a new
 project/output folder for further work while retaining the approved original.
 
-Main timelines support up to four hours. Detailed progress percentages are not
-implemented, and long previews may take time. See [operating limits](../../FEATURES.md#operating-limits)
+Main timelines support up to four hours. Single preview/final renders show the
+current preparation/encoding phase, elapsed time and encoding percentage.
+**Cancel render** stops preparation or encoding, discards partial output and keeps
+the saved revision for an explicit retry. Cancellation is disabled while the
+completed file is being published. Refreshing/reopening the project reconnects
+to its active job. A stopped/restarted service reports an interrupted or failed
+job and requires a new render action; it does not retry automatically. Friendly
+errors offer **Technical details** when available. See [operating limits](../../FEATURES.md#operating-limits)
 for caption file/body limits and distinctions from clip and MCP requests.
 
 ## Create clips within a main project
@@ -175,5 +183,5 @@ Export packages contain rendered outputs and handoff metadata, not a source-medi
 backup. For implementation details, use the [bridge reference](README.md).
 
 The current editor uses buttons/ranges/proposals. Native timeline dragging,
-waveforms, keyframes, file picking, automatic caption repair and generative media
+waveforms, keyframes, automatic caption repair and generative media
 remain unimplemented; [FEATURES.md](../../FEATURES.md#remaining-work) is the current list.

@@ -1,6 +1,6 @@
 # OpenCut local bridge reference
 
-Fork bridge **0.11.0** (private package) · current behavior, 26 October 2026.
+Fork bridge **0.12.0** (private package) · current behavior, 27 October 2026.
 
 The bridge backs the browser main editor and clip-review workflow with local
 files, declarative v1/v2 edit plans, immutable revisions, FFmpeg rendering and
@@ -176,7 +176,8 @@ a candidate inside its manifest. The usual full-video candidate is `master`.
 | Method and path | Request / result |
 | --- | --- |
 | `GET /health` | Bridge status/version and whether a render is active |
-| `GET /v1/workspace-projects` | Library records and configured `mediaRoot`; no unrelated disk scan |
+| `GET /v1/workspace-projects` | Library records, configured `mediaRoot` and `filePickerAvailable`; no unrelated disk scan |
+| `POST /v1/workspace-projects/pick-media` | `{purpose: "video"\|"watermark"\|"music"\|"captions"}` → macOS chooser path or cancellation; no copy/import/upload |
 | `POST /v1/workspace-projects` | `{name, sourcePath}` → full-source v2 project record |
 | `POST /v1/workspace-projects/:project/open` | `{}` → project record, fresh `sessionId`, `approvalToken` |
 | `POST /v1/workspace-projects/:project/media` | `{path}` → bounded local inspection/import metadata; VTT becomes a separate SRT |
@@ -208,9 +209,11 @@ draft available for retry when no render is active.
 | `POST /v1/review-sessions/:session/generate-captions` | Token-gated provider run / supplied-caption confirmation |
 | `POST /v1/review-sessions/:session/revise-captions` | Token-gated cue correction save |
 | `POST /v1/review-sessions/:session/preflight` | Read-only next-action checks |
-| `POST /v1/review-sessions/:session/render-preview` | Token-gated revision-specific preview |
+| `POST /v1/review-sessions/:session/render-preview` | Token-gated revision-specific preview; `background: true` → 202 `{job}` |
 | `GET\|HEAD /v1/review-sessions/:session/candidates/:candidate/preview` | Authorized preview stream |
-| `POST /v1/review-sessions/:session/approve-and-render` | Separate token-gated final; requires current preview |
+| `POST /v1/review-sessions/:session/approve-and-render` | Separate token-gated final; requires current preview; `background: true` → 202 `{job}` |
+| `GET /v1/review-sessions/:session/render-jobs?candidateId=...` | Saved-manifest-scoped recent jobs with revision, mode, status, phase, elapsed timestamps, encoding seconds/percent and diagnostics |
+| `POST /v1/review-sessions/:session/render-jobs/:job/cancel` | `{approvalToken}` → cancel active preparation/encoding in the same manifest; 403 wrong token, 409 wrong scope/completed/publishing |
 | `POST /v1/review-sessions/:session/approve-batch` | Explicit sequential batch approval |
 | `POST /v1/review-sessions/:session/export-package` | Token-gated package for completed candidates |
 | `GET\|HEAD /v1/review-sessions/:session/candidates/:candidate/output` | Existing final stream; `?download=1` sets an attachment filename |
@@ -240,7 +243,7 @@ All editorial routes use `/v1/review-sessions/:session/edits/`:
 | `silence` | Same identity/revision/token; read local audio and return pause suggestions |
 
 Operations are `keep`/`remove` with `{start,end}` range arrays, `shorten` with
-`seconds` (0.1–300), and `move-first` with `clipId`. Ranges/protection use output-timeline
+`seconds` (0.1–14,400 for full projects; 0.1–300 for clips), and `move-first` with `clipId`. Ranges/protection use output-timeline
 seconds. Proposals expire after 30 minutes, and applying checks both revision and
 plan hash. Review edit conflicts return HTTP 409. Manifest-level locks are shared
 across registered views in the process. Save/retry is required after stale work;
@@ -288,6 +291,30 @@ credential. Back up library records, project folders and every referenced source
 logo/audio/caption file. Export packages contain outputs and available metadata,
 not the original large sources.
 
+## Background jobs and local picking
+
+Single saved-session preview/final calls default to the existing synchronous response.
+The web workspace sends `background: true`, receives 202 `{job}`, and polls the
+manifest-scoped job list. Status is queued/running/cancelling/completed/failed/
+cancelled/interrupted; phase is preparing/rendering/publishing. Encoding percent
+is based on FFmpeg output time, not an ETA or a whole-pipeline completion estimate.
+Preparation has an indeterminate indicator; successful jobs finish at 100%.
+
+Jobs persist under `.opencut-agent/render-jobs/<manifest-sha256-prefix>/<uuid>.json`.
+They contain no action tokens. Fresh opaque sessions for the same manifest can
+observe/cancel an active job. Restarted in-progress checkpoints become interrupted;
+normal shutdown may record failed instead. Neither restarts automatically.
+Cancellation stops child media processes and removes partial output; publication
+cannot be cancelled. Separate preview/final gates and immutable revisions remain.
+These controls cover single saved-session previews/finals, not batches, direct MCP
+renders or legacy encoded-plan links.
+
+`pick-media` uses the native macOS chooser and validates the selected real path
+against `OPENCUT_AGENT_ROOT`. It does not copy, upload or import the file. Choosing
+outside that root returns 400; another open chooser returns 409. Unsupported
+platforms return 501 and retain manual path entry. Cancelling the chooser returns
+`{cancelled: true, path: null}`. Only one chooser opens at a time.
+
 ## Legacy encoded-plan links
 
 `/?plan=<URL-encoded JSON>` remains supported for standalone imported plans. This
@@ -318,6 +345,7 @@ Generated-media integration checks (from `apps/agent-bridge`):
 ./node_modules/.bin/bun run smoke:editorial
 ./node_modules/.bin/bun run smoke:review
 ./node_modules/.bin/bun run smoke:project
+./node_modules/.bin/bun run smoke:jobs
 ```
 
 The last implementation pass recorded 66 bridge tests, 24 web tests, both builds/
