@@ -17,8 +17,9 @@ separate from current operating instructions.
 
 ## Proposed development
 
-- [Script-to-cut assembly plan](plans/script-to-cut.md): assessment, first-cut
-  workflow, implementation stages and acceptance checks. Proposed, not implemented.
+- [Agentic script-to-cut plan](plans/script-to-cut.md): agent-led inspection, scene
+  planning, draft assembly, conversational revision and acceptance checks. Proposed,
+  not implemented.
 
 ## Evidence and milestones
 

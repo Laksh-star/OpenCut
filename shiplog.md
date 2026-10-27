@@ -233,3 +233,22 @@ historical runtime validation is only reported where separately recorded.
   UI media helpers; checked documentation links and whitespace. Planning only:
   no application implementation, dependency changes, uploads or media renders;
   application tests were not rerun. Version remains 0.12.0.
+
+
+## 2026-10-27 — Agent-led script-to-cut plan revision
+
+- Incorporated the user's requirement that script-to-cut be an agentic workflow.
+  Revised the plan so the agent owns inspection, scene breakdown, asset/timing
+  choices, draft assembly, validation and conversational revisions. The storyboard
+  is a review artifact/override surface; user-authored scene mapping is not a
+  prerequisite. This supersedes the earlier manual-first delivery recommendation.
+- Added proposed typed tool contracts, durable run/checkpoint state, bounded repair,
+  lock/revision preservation, evidence-backed choices, focused exception questions
+  and separation of planning from the trusted existing renderer. Reuse the current
+  external-agent/MCP stack; no new framework or hosting dependency was installed.
+- Kept local-media privacy and separate visible preview/final approvals. Added
+  acceptance checks for unattended first-draft planning, conversational changes,
+  interruption/resume, missing assets and narration/script conflicts.
+- Verification: reviewed the revised plan against current bridge boundaries;
+  checked local document links and whitespace. Planning only: no application code,
+  media processing, uploads or renders; application tests were not rerun.

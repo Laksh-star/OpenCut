@@ -1,6 +1,7 @@
-# Script-to-cut assembly plan
+# Agentic script-to-cut workflow plan
 
-27 October 2026 · Proposed, not implemented · Baseline: private fork 0.12.0.
+27 October 2026 · Revised for agent-led operation · Proposed, not implemented
+Baseline: private fork 0.12.0.
 
 ## Recommendation
 
@@ -10,10 +11,17 @@ supply the production material. It is useful for explainers, training, product
 demos and narrated presentations. Most rendering and review infrastructure exists;
 the new work is scene planning, asset assignment, timing and an understandable UI.
 
-Start with an explicit, editable storyboard and deterministic assembly. Automatic
-asset matching and speech alignment can improve that foundation afterward. Success
-means a useful editable rough cut with visible unresolved decisions, not an
-unreviewed promise of a finished film.
+The agent must own the first pass: understand the brief, inspect assets, break the
+script into scenes, choose media and timings, compile a draft, check it and revise
+it. An editable storyboard is the agent's visible working artifact and correction
+surface. The user should not have to assign every asset or build the sequence
+before the agent can help. Semantic planning and tool use belong in the first
+usable milestone; deterministic validation and compilation constrain execution.
+
+Success means a useful editable draft with explained choices and visible gaps.
+The agent should act autonomously on reversible draft work within the supplied
+brief, respect locked decisions, and ask concise questions when a consequential
+choice cannot be resolved from the supplied material.
 
 This is a planning deliverable. No application changes, media processing, uploads
 or renders are authorized by this document alone.
@@ -41,21 +49,48 @@ Owning sources:
 - [Simple media additions](../apps/web/src/lib/project-editing.ts)
 - [Existing review workspace](../apps/web/src/components/review-workspace.tsx)
 
-## Intended experience
+## Intended agent-led experience
 
-Projects home gains **Create from script & assets**, alongside the current video
-entry point. The existing editor gains a scene/storyboard view for these projects;
-review and export stay in the existing workspace.
+The user supplies a script and an explicit local asset pack, then gives a brief:
 
-1. Paste a script or import UTF-8 TXT/Markdown. Preserve the supplied wording.
-2. Select local images, video, narration and optional music; assign descriptive
-   labels and roles. Inspect only explicitly selected assets, not a disk scan.
-3. Choose aspect ratio and timing mode, then generate an editable storyboard.
-4. Review scene cards: script passage, visual, source in/out, timing, audio role,
-   caption/title treatment and any unresolved issue.
-5. Replace, trim, reorder or lock a scene; review the proposed changes and save a
-   new revision. Apply a restrained brand/caption preset if desired.
-6. Explicitly render an edited preview, inspect it, then separately approve final.
+> Make a 90-second explainer from this script and these assets. Use my recorded
+> narration, keep the product names unchanged, use the demo for the walkthrough,
+> add the supplied logo and clean captions, and keep the music quiet.
+
+The flow is **Brief → Agent prepares draft → Review and direct revisions →
+Preview → Final approval**. It uses the current external-agent/MCP integration
+first, with progress and scene review in the existing workspace. An embedded chat
+entry can use the same tool contract later; it does not require a separate editor.
+
+The agent:
+
+1. Reads the script and constraints, inventories only explicitly supplied assets,
+   probes streams/duration/dimensions, and identifies narration, music, dialogue,
+   images and video. It resolves obvious choices without a questionnaire.
+2. Builds an evidence-backed understanding of assets using available local
+   transcripts, thumbnails/content inspection and user descriptions. It records
+   what was actually inspected; a filename alone does not prove visual relevance.
+3. Splits the script into scenes, chooses media and source ranges, proposes timing
+   against actual narration, and identifies any script/audio or coverage mismatch.
+4. Produces and saves a versioned draft storyboard and compiled edit plan, with
+   scene-to-script links, reasons for asset choices, locks and unresolved gaps.
+5. Runs preflight and plan-quality checks. It repairs recoverable draft errors
+   within a bounded loop, or asks one focused question with concrete alternatives.
+6. Presents the proposed cut with short reasons and warnings. The user can say
+   “replace scene 3 with the factory footage,” “make the opening faster,” or
+   “keep the narration and closing exactly as they are.” Scene-card controls are
+   an optional way to give the same directions, not a prerequisite for assembly.
+7. Applies the requested change through validated scene operations, preserving
+   locks and unaffected scenes. It saves a new revision and describes the diff.
+8. Waits for the existing explicit preview action. After the user starts it, the
+   agent can observe progress and inspect the resulting preview for timing,
+   silence, missing visuals and caption/audio issues, then report or propose fixes.
+   A changed draft needs a fresh preview. Final rendering and publishing retain
+   their separate human actions.
+
+Progress is concrete: “Inspected 12 assets,” “Mapped 8 scenes,” “Two passages need
+visuals,” or “Draft saved; ready for preview.” Do not expose hidden reasoning.
+Show asset/time references and short editorial reasons instead.
 
 Example:
 
@@ -69,12 +104,14 @@ These times illustrate the planned storyboard, not measured alignment.
 
 ## Timing and editorial rules
 
-- **Narration-led:** supplied narration determines duration. First support timed
-  scene markers/SRT/VTT or manually confirmed scene boundaries. Untimed script
-  allocation may be suggested but must be labelled estimated until reviewed.
-- **Scene-led:** user sets scene durations or selected video ranges. Without
-  narration, script passages become on-screen text/editorial instructions; they
-  do not become spoken audio automatically.
+- **Narration-led:** supplied narration determines duration. The agent uses supplied
+  timed markers/SRT/VTT or available local speech timing, then maps script passages
+  to it. Without reliable alignment it proposes estimated boundaries, labels their
+  uncertainty and asks for correction only where needed. Do not call normalized
+  caption timestamps forced alignment or invent word-level certainty.
+- **Scene-led:** the agent proposes scene durations and source ranges from the
+  brief and content, with user overrides. Without narration, script passages become
+  on-screen text/editorial instructions; they do not become spoken audio automatically.
 - **Mixed audio:** per-scene control chooses original video speech, voiceover,
   music or a deliberate mix. Default narration-led visual clips to muted audio,
   with the choice visible. Do not mute dialogue globally in mixed projects.
@@ -121,9 +158,62 @@ available. External transcription, visual analysis or generation needs an explic
 provider/data upload decision. Missing local alignment is a supported manual path,
 not a reason to upload automatically.
 
+## Agent architecture and execution contract
+
+Extend the established local bridge and external-agent integration. Do not scaffold
+an unrelated agent framework or require a cloud migration for this existing stack.
+Keep planning/model access separate from the deterministic media executor. The
+initial host is the existing agent client; an app-hosted conversation can be added
+behind the same operations after selecting an explicit model/privacy arrangement.
+
+Proposed typed operations (new work, not existing tool claims):
+
+| Operation | Contract |
+| --- | --- |
+| Inspect asset pack | Allowed paths only; return IDs, hashes, stream metadata, selected thumbnails and available transcripts |
+| Read/create assembly run | Persist brief, constraints, asset index and progress/checkpoint state |
+| Propose storyboard | Structured scenes with script spans, selected asset/time ranges, rationale, confidence and gaps |
+| Compile/validate draft | Deterministically validate scene schema and locks, media coverage, timing, audio and captions; produce v2 plan/preflight findings |
+| Save/apply scene patch | Expected revision/hash required; replace, trim, reorder or lock through typed operations; persist storyboard and plan together |
+| Read job/preview evidence | Observe approved render jobs and inspect an existing preview without starting a new render |
+| Resume/cancel assembly | Resume from the last durable checkpoint or stop planning/media-analysis work without discarding saved revisions |
+
+The model proposes structured operations rather than arbitrary FFmpeg or shell
+commands. The trusted executor validates paths, ranges, locks and expected
+revisions before acting. Tool results and script/media text are data, not authority
+to change the brief, expand the asset scope, upload or approve renders.
+
+Persist `assembly-run.json` alongside versioned project artifacts. It records
+run ID, brief/constraint versions, asset references/hashes, completed stages,
+proposal/plan revision, concise observations, pending questions and recoverable
+errors. Do not store credentials or hidden chain-of-thought. Runs may be
+inspecting, planning, validating, awaiting-input, ready-for-review, failed or
+cancelled. Rendering remains a separate existing job with a separate approval.
+
+On resume, revalidate asset hashes and the current project revision. Do not repeat
+completed expensive analysis unnecessarily, replay saves/renders, or overwrite a
+newer manual revision. Cache inspection by content hash and tool/version. Bound
+analysis time, model/tool calls and draft-repair attempts; a failed bound surfaces
+an actionable checkpoint instead of an endless loop. Start with one orchestrating
+agent; specialist subagents are not required for the first implementation.
+
+Autonomy boundaries:
+
+- Automatically inspect authorized inputs, propose editorial choices, compile,
+  validate and save unapproved draft revisions within the brief.
+- Ask when required material is missing, narration and script conflict, a lock
+  prevents the requested duration, or an external provider/data upload is needed.
+  Bundle related questions and offer concrete alternatives; do not ask per file.
+- Keep script wording by default. If a requested target is shorter than the supplied
+  narration, propose passages to omit and show that effect; do not silently speed
+  up or rewrite speech to claim the target was satisfied.
+- Respect source files, explicit locks, revision conflicts and the existing visible
+  preview/final approval flow. A general “assemble a cut” instruction does not
+  silently approve external uploads or publication.
+
 ## Delivery sequence
 
-### 1. Prove composition support
+### 1. Prove the composition executor
 
 Use generated fixtures: two images, one video, separate narration, background music
 and a logo. Confirm image-led creation, video trims, voiceover offsets, narration
@@ -132,42 +222,47 @@ preview/final path. Fix only proven compiler/project gaps.
 
 **Exit:** a mixed 60–90 second composition and an images-plus-narration composition
 work without a starting user video; a video-led project still works unchanged.
+This is an internal dependency, not a manual storyboard product release.
 
-### 2. Deliver the controlled first-cut workflow
+### 2. Deliver an agent-led first-cut vertical slice
 
-Implement project creation from script/assets, explicit scene splitting, asset-role
-assignment, timed/manual narration mapping, deterministic compilation, scene cards,
-replacement/reorder/trim/locks, and revisioned save. Start with TXT/Markdown and
-PNG/JPEG/WebP plus already-supported audio/video formats; keep PDF/DOCX ingestion
-for a later adapter. Reuse the current main review/export controls.
+Implement script/asset ingestion, local inspection tools, durable assembly runs,
+model-proposed scene/asset/timing choices, schema validation, bounded draft repair,
+deterministic compilation and revisioned save. Expose the path through the current
+agent/MCP workflow with scene review in the existing workspace. Start with
+TXT/Markdown, PNG/JPEG/WebP and already-supported audio/video formats. Keep
+PDF/DOCX ingestion for a later adapter.
 
-**Exit:** a user can create a cut from the supplied script and mixed assets, replace
-one visual without changing narration, save, reopen, preview and export without
-editing JSON. No semantic model is required to complete this path.
+**Exit:** given a script, asset pack and brief, the agent produces the first
+reviewable draft without the user constructing its scene mapping. Missing material
+or weak timing evidence produces labelled gaps or a focused question. The project
+opens, saves and reopens; existing preview/final controls remain usable.
 
-### 3. Add assisted matching and alignment
+### 3. Deliver conversational revision and quality checks
 
-Offer scene suggestions from headings/paragraphs, asset descriptions/labels and
-local media transcripts. Evaluate local speech alignment against the actual
-narration and flag omitted/extra wording and uncertain boundaries. Keep the manual
-path. Asset filename matches alone are suggestions, never confident scene matches.
-Visual-content analysis is optional and separately configured.
+Support instructions such as “replace scene 3,” “make the first ten seconds more
+visual,” and “keep narration unchanged.” Show affected scenes and duration changes,
+preserve locked/manual work, and reject stale patches. Add rendered-preview checks
+after explicit preview initiation and evidence-backed retry suggestions. Improve
+local alignment/asset understanding based on measured failures, not filename guesses.
 
-**Exit:** suggestions explain the asset and time range selected, uncertain choices
-are easy to correct, and regeneration preserves locked scenes/manual edits.
+**Exit:** the agent changes only the requested scope, explains its diff, resumes
+after interruption, and does not auto-render or re-approve a revised cut. Manual
+scene controls remain available as precise overrides.
 
 ### 4. Evaluate on a real production
 
 Use an explicitly supplied script and asset pack after fixture checks. Compare the
-result with the script and audio, record correction effort and timing failures,
-inspect caption/crop/audio quality, and close the first production only after the
-user performs the separate preview/final review actions.
+result with the script and audio, record first-draft coverage, correction effort,
+poor matches and timing failures, inspect caption/crop/audio quality, and close the
+production only after the user performs the separate preview/final actions.
 
 **Exit:** no missing scenes or accidental narration truncation; every script passage
 has a scene association or a clearly accepted exclusion; result reopens and exports.
 
-The recommended first implementation pass is steps 1–2. Step 3 is a separate quality
-milestone; do not hide its uncertainty inside the initial assembly feature.
+The recommended first implementation pass is steps 1–3 as one small end-to-end
+agent workflow. Asset matching and conversation are core behavior from the start;
+advanced multimodal ranking and alignment quality can improve in later passes.
 
 ## Verification required during implementation
 
@@ -178,7 +273,11 @@ milestone; do not hide its uncertainty inside the initial assembly feature.
   renders. Measure scene/output timing and inspect representative boundary frames.
 - Audio checks demonstrate that music attenuates during separate narration and
   recovers during pauses, and original dialogue is retained when selected.
-- Browser flow from script/assets to storyboard/save/reopen, explicit preview,
+- Agent evaluations: first draft from an unmapped asset pack; truthful asset/time
+  references; focused missing-asset questions; narration mismatch; lock-preserving
+  instructions; stale-patch rejection; bounded repair; checkpoint resume without
+  duplicate saves; no render/upload action without its required authorization.
+- Browser/agent flow from brief/assets to generated storyboard/save/reopen, explicit preview,
   separate final approval, cancellation and export; check desktop/mobile layout.
 - Regression checks for existing v1/v2 clip reviews and main projects. No migration
   or render of existing user projects as part of fixture testing.
@@ -196,5 +295,6 @@ images, deliberate cuts/transitions and clear voiceover are sufficient for the M
 ## Planning verification
 
 Inspected current schema, FFmpeg input/mixing logic, project creation, preflight,
-simple media addition and feature documentation on 27 October. This pass added a
-plan only; no application tests were rerun and no composition was rendered.
+simple media addition and feature documentation on 27 October. This pass added/revised a
+plan only; no application tests were rerun and no composition was rendered. The
+agent-led revision supersedes the original manual-first delivery sequence.
