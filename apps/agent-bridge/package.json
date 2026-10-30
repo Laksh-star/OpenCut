@@ -27,7 +27,8 @@
     "smoke:production": "bun run scripts/multitrack-smoke.ts",
     "setup-bridge": "bun run scripts/setup-bridge.ts",
     "smoke:project": "bun run scripts/main-project-smoke.ts",
-    "smoke:jobs": "bun run scripts/render-jobs-smoke.ts"
+    "smoke:jobs": "bun run scripts/render-jobs-smoke.ts",
+    "benchmark:prepare": "bun run scripts/prepare-script-benchmark.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

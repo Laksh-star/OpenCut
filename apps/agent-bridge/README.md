@@ -359,3 +359,13 @@ For missing assets, path-root errors, stale sessions, provider setup, final
 immutability or relative export paths, follow the troubleshooting table in the
 [main editor guide](MAIN_EDITOR_GUIDE.md#reopen-and-recovery). Upstream desktop
 builds and native editor integration are separate from this bridge.
+
+### Script-to-cut benchmark preparation
+
+`./node_modules/.bin/bun run benchmark:prepare /absolute/path/to/new/folder`
+prepares a generated script/asset pack on macOS using the already-installed
+Samantha voice. It writes a fixed brief, measured captions, media/hash manifest,
+input-only ZIP, scoring/revision protocol and an unselected reference plan outside
+the checkout. It does not render a cut, install Kino or implement agent assembly.
+The output folder must not exist. See the
+[dated preparation report](../../research/script-to-cut-benchmark-v1-2026-10-30.md).

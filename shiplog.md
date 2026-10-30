@@ -268,3 +268,25 @@ historical runtime validation is only reported where separately recorded.
   documentation; checked local report links/whitespace. Research only: no feature
   implementation, application tests, installation, account access, media uploads
   or renders. No change to the proposed assembly workflow or package version.
+
+## 2026-10-30 — Prepare the script-to-cut benchmark
+
+- Prepared an isolated, generated Harbor test pack under Downloads: a 69.889563 s
+  English narration/script, seven scenes, 21 measured sentence captions and 13
+  media assets (images/alternate/distractors, video, logo, narration and music).
+  No private podcast media or real supplied logo was used; no external provider.
+- Added a reproducible macOS fixture preparer, identical input-only ZIP, fixed
+  brief, evaluator-only reference ledger, 100-point scorecard and three revision
+  challenges for scoped replacement, infeasible timing and missing assets.
+- Prepared an agent-authored existing-engine reference plan and unselected review
+  session. This is not a delivered autonomous assembly feature. Quiet static music
+  is explicitly distinguished from unavailable separate-narration ducking.
+- Validation: executed fixture generation; all 13 assets probed, 19 input/ZIP hashes
+  matched, imagery/video samples inspected, input audio levels checked, reference
+  schema/compile and independent session validation passed. Content preflight has
+  14 passes with the expected candidate-selection blocker. An initial preparer
+  assertion was fixed to preserve that blocker; no application gate changed.
+- Bridge typechecking and documentation link/whitespace checks passed. No assembled
+  cut preview/final, application test-suite rerun, live Kino trial, app installation,
+  account access or upload occurred. No scores were invented. Kino connection/sign-in
+  remains a prerequisite for its run; package version remains 0.12.0.

@@ -23,6 +23,9 @@ separate from current operating instructions.
 
 ## Product comparisons
 
+- [Script-to-cut benchmark preparation — 30 October 2026](research/script-to-cut-benchmark-v1-2026-10-30.md):
+  generated input pack, fixed brief, revision challenges and scoring. Product runs
+  remain unscored; Kino was not installed or connected.
 - [Kino.ai comparison — 30 October 2026](research/kino-comparison-2026-10-30.md):
   official documented features versus our implemented 0.12.0 fork and separately
   identified plans. Research only; no Kino runtime trial.

@@ -143,6 +143,7 @@ claim that every platform or external transcription provider was exercised.
 - [Development shiplog](shiplog.md)
 - [Current architecture and historical report](project-report.md)
 - [Documentation index](DOCUMENTATION.md)
+- [Script-to-cut benchmark inputs and procedure](research/script-to-cut-benchmark-v1-2026-10-30.md)
 
 Upstream web/API/desktop development tasks remain separate from the local studio
 launcher. The Rust desktop app is still a scaffold; see its
