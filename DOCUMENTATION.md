@@ -21,6 +21,12 @@ separate from current operating instructions.
   planning, draft assembly, conversational revision and acceptance checks. Proposed,
   not implemented.
 
+## Product comparisons
+
+- [Kino.ai comparison — 30 October 2026](research/kino-comparison-2026-10-30.md):
+  official documented features versus our implemented 0.12.0 fork and separately
+  identified plans. Research only; no Kino runtime trial.
+
 ## Evidence and milestones
 
 - [0.12.0 local fork milestone](changelog/0.12.0.md): render reliability, long

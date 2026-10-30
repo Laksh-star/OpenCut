@@ -252,3 +252,19 @@ historical runtime validation is only reported where separately recorded.
 - Verification: reviewed the revised plan against current bridge boundaries;
   checked local document links and whitespace. Planning only: no application code,
   media processing, uploads or renders; application tests were not rerun.
+
+## 2026-10-30 — Kino.ai feature comparison
+
+- Compared Kino's official product/docs/changelog/pricing with implemented fork
+  0.12.0 and the separately labelled agentic script-to-cut proposal. Added the
+  [dated comparison](research/kino-comparison-2026-10-30.md) to the documentation map.
+- Identified documented Kino breadth in agent-first editing, indexed footage,
+  timeline tools, graphics, team review and interchange. Both products support
+  external agents and revision recovery; these are not unique local advantages.
+- Distinguished local media defaults: Kino documents cloud proxies by default;
+  our renderer/project flow stays local and gates external transcription. Exact
+  Kino approval/provenance and local-only options were not runtime-tested.
+- Verification: read owning capability/tool/compiler sources and official web
+  documentation; checked local report links/whitespace. Research only: no feature
+  implementation, application tests, installation, account access, media uploads
+  or renders. No change to the proposed assembly workflow or package version.
